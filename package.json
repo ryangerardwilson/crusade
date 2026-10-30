@@ -1,0 +1,13 @@
+{
+  "name": "crusade",
+  "private": true,
+  "description": "OpenSpec tooling for crusade",
+  "scripts": {
+    "specs:list": "openspec list --specs",
+    "specs:changes": "openspec list",
+    "specs:validate": "openspec validate --all --strict --no-interactive"
+  },
+  "devDependencies": {
+    "@fission-ai/openspec": "1.6.0"
+  }
+}

@@ -1,0 +1,18 @@
+schema: spec-driven
+
+context: |
+  crusade is a Go terminal tracker. The command is crusade.
+  Modes are do (agenda), align (Jobs-to-Be-Done outcomes with p/q/r
+  scores), and box (daily checklist). The TUI and CLI share the sqlite
+  database ~/.sqlx/data/crusade.sqlite. Config stays at
+  ~/.config/xyz/config.json. Product behavior is described in README.md
+  and PROJECTSCOPE.md until a capability spec replaces them.
+
+rules:
+  proposal:
+    - State the operator problem, outcome, scope, and non-goals.
+  specs:
+    - Use SHALL or MUST and concrete GIVEN/WHEN/THEN scenarios.
+  tasks:
+    - Include strict OpenSpec validation and the relevant Go tests.
+    - Mark a task complete only after the check has been run.

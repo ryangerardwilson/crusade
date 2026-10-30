@@ -119,7 +119,7 @@ func TestDatabaseMatchesSQLX(t *testing.T) {
 	}
 	bin, err := exec.LookPath("sqlx")
 	if err != nil {
-		t.Fatal(err)
+		t.Skip("sqlx is not installed")
 	}
 	inspect := exec.Command(bin, "crusade", "inspect")
 	inspectOut, err := inspect.CombinedOutput()

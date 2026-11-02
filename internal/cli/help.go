@@ -1,7 +1,7 @@
 package cli
 
 const HelpText = `crusade
-terminal tracker for do tasks, align outcomes, and daily boxes
+terminal tracker for do tasks, align outcomes, daily boxes, and nlp practice
 
 global actions:
   crusade help
@@ -17,17 +17,18 @@ open a mode:
   crusade -m do
   crusade -m align
   crusade -m box
+  crusade -m nlp
   crusade open
     resume the last mode, or do when none is saved
 
-  In the TUI, tab cycles do, align, and box.
+  In the TUI, tab cycles do, align, box, and nlp.
 
   explain the x/y/z and p/q/r fields
   # crusade explain fields
   crusade explain fields
 
 records, one mode and one operation:
-  -m do|align|box
+  -m do|align|box|nlp
   -c create   -r read   -u update   -d delete
 
   do tasks store an outcome and a day
@@ -60,6 +61,10 @@ records, one mode and one operation:
   # crusade -m box -u
   crusade -m box -c
   crusade -m box -u
+
+  nlp is the practice list. Its sessions stay in the sqlx database nlp.
+  # crusade -m nlp
+  crusade -m nlp
 
   when is YYYY-MM-DD or YYYY-MM-DD HH:MM[:SS]. A date alone is 23:59:59.
   Omit when on do create to use today.

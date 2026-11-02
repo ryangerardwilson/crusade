@@ -13,6 +13,14 @@ import (
 	"github.com/ryangerardwilson/crusade/internal/store"
 )
 
+type bannerInner struct{}
+
+func (bannerInner) Init() tea.Cmd { return nil }
+
+func (b bannerInner) Update(tea.Msg) (tea.Model, tea.Cmd) { return b, nil }
+
+func (bannerInner) View() string { return "sessions" }
+
 func TestBoxToggleSavesAndDayMoveDoesNotCreateRows(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("SQLX_ROOT", root)
@@ -88,6 +96,7 @@ func TestModeBadgesShareTheBlueCorner(t *testing.T) {
 		{"DO", strings.Split(do.View(), "\n")[0]},
 		{"ALIGN", strings.Split(align.View(), "\n")[0]},
 		{"BOX", strings.Split(box.View(), "\n")[0]},
+		{"NLP", strings.Split(nlpMode{width: 48, inner: bannerInner{}}.View(), "\n")[0]},
 	}
 	color := ""
 	for _, view := range views {

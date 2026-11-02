@@ -15,7 +15,8 @@ packaging are separated cleanly.
   They do not store an x/y/z statement or scores.
 - Keep do records, align records, and boxes in the sqlx database `crusade`.
   Align mode lists align records. Do mode lists do records. Box mode lists the checklist.
-- `crusade -m do` opens the do agenda. `crusade -m align` opens align mode. `crusade -m box` opens the daily checklist. `q` quits the TUI. While a do task is being typed, `q` is a letter. Tab cycles do, align, and box, and returns each mode to the screen you left. crusade open resumes the last mode, or do when none is saved. Each mode puts the same blue badge, `DO`, `ALIGN`, or `BOX`, in the top right.
+  Practice sessions stay in the sqlx database `nlp`.
+- `crusade -m do` opens the do agenda. `crusade -m align` opens align mode. `crusade -m box` opens the daily checklist. `crusade -m nlp` opens the practice list. `q` quits the TUI. While a do task is being typed, `q` is a letter. Tab cycles do, align, box, and nlp, and returns each mode to the screen you left. Tab stays put while a do task is being typed and while an nlp session is being named or typed. crusade open resumes the last mode, or do when none is saved. Each mode puts the same blue badge, `DO`, `ALIGN`, `BOX`, or `NLP`, in the top right. The `nlp` command opens the practice list.
 - Do and align lists are checkbox rows drawn from the top of the terminal downward. Space marks the selected task done and leaves it in the list. `dd` still deletes it. Box shortcuts appear only while `?` is open. Below the box list, a momentum graph draws checked days as a contribution calendar: weeks are columns, weekdays are rows, bluer squares mean more boxes checked, and the caption is the current streak.
 - Do mode asks for the task text only. A new task is dated today in the agenda,
   or on the selected day of the month calendar. `e` edits that text. `r` changes
@@ -25,7 +26,7 @@ packaging are separated cleanly.
 - Align mode is the outcome tracker. From the TUI, open Vim on that one record
   to add at the selected date or edit the selected task, then save the row.
 - Preserve the deterministic command grammar. CRUD names the mode and one operation:
-  - `crusade -m do` opens do mode. `crusade -m align` opens align mode. `crusade -m box` opens box mode.
+  - `crusade -m do` opens do mode. `crusade -m align` opens align mode. `crusade -m box` opens box mode. `crusade -m nlp` opens the practice list. `-c`, `-r`, `-u`, and `-d` are not nlp operations.
   - `crusade -m do|align -c|-r|-u|-d [args]`
   - `crusade -m box -r` shows today. `crusade -m box -c` and `crusade -m box -u` open the outline YAML in Vim and save every box.
   - `crusade -m do -c <outcome> [when]`
@@ -44,8 +45,9 @@ packaging are separated cleanly.
 - `internal/cli`: command grammar, editor flow, help, config, upgrade.
 - `internal/model`: mode, datetime, metric, and statement validation.
 - `internal/store`: sqlx database load/save/add/update/delete, plus a one-time boxes import.
-- `internal/tui`: Bubble Tea agenda and month surfaces plus Vim suspension and
+- `internal/tui`: Bubble Tea agenda, month, checklist, and nlp surfaces plus Vim suspension and
   reload.
+- `nlp`: the practice-session mode. Its rows stay in the sqlx database `nlp`.
 - `internal/config`: XDG config.
 - `internal/version`: release-time version injection.
 

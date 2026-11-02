@@ -49,13 +49,15 @@ Other installer commands:
 crusade -m do       # agenda
 crusade -m align    # outcomes
 crusade -m box      # daily checklist
+crusade -m nlp      # practice sessions
 crusade open        # last mode, or do when none is saved
 crusade help
+nlp                 # same as crusade -m nlp
 ```
 
-In the TUI, Tab cycles do, then align, then box, and returns each mode to the screen you left. `q` quits. While a do task is being typed, `q` is a letter.
+In the TUI, Tab cycles do, then align, then box, then nlp, and returns each mode to the screen you left. `q` quits. While a do task is being typed, `q` is a letter. Tab stays put while a do task is being typed and while an nlp session is being named or typed.
 
-Each mode shows only its own records. The mode badge in the top right is `DO`, `ALIGN`, or `BOX`.
+Each mode shows only its own records. The mode badge in the top right is `DO`, `ALIGN`, `BOX`, or `NLP`.
 
 ## Do
 

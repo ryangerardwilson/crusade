@@ -83,8 +83,9 @@ Do not edit canonical specs directly to smuggle in new behavior.
 Repository: `crusade` at `github.com/ryangerardwilson/crusade`.
 
 crusade is one Go binary. The command is `crusade`. Modes are `do`, `align`,
-and `box`. Config stays at `~/.config/xyz/config.json`. The database is
-`~/.sqlx/data/crusade.sqlite`, opened through `sqlite3`.
+`box`, and `nlp`. Config stays at `~/.config/xyz/config.json`. The database is
+`~/.sqlx/data/crusade.sqlite`, opened through `sqlite3`. Practice sessions stay
+in the sqlx database `nlp`.
 
 Do not add this module to the home `go.work`. Test with `GOWORK=off go test ./...`.
 Work and commit inside this Git root.

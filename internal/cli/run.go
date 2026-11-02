@@ -113,6 +113,9 @@ func runCRUD(dataPath string, args []string, stdout, stderr io.Writer) int {
 		}
 	case model.ModeBox:
 		return runBox(dataPath, op, rest, stdout)
+	case model.ModeNLP:
+		fmt.Fprintln(stdout, "Usage: crusade -m nlp")
+		return 1
 	}
 	fmt.Fprintln(stdout, "Unknown command. Run: crusade help")
 	return 1
@@ -130,17 +133,17 @@ func parseModeOp(args []string) (string, string, []string, error) {
 		switch arg {
 		case "-m":
 			if mode != "" {
-				return "", "", nil, fmt.Errorf("Use -m once. Choose do, align, or box.")
+				return "", "", nil, fmt.Errorf("Use -m once. Choose do, align, box, or nlp.")
 			}
 			if idx+1 >= len(args) {
-				return "", "", nil, fmt.Errorf("Usage: crusade -m do|align -c|-r|-u|-d [args]")
+				return "", "", nil, fmt.Errorf("Usage: crusade -m do|align|box|nlp -c|-r|-u|-d [args]")
 			}
 			idx++
 			switch args[idx] {
-			case model.ModeDo, model.ModeAlign, model.ModeBox:
+			case model.ModeDo, model.ModeAlign, model.ModeBox, model.ModeNLP:
 				mode = args[idx]
 			default:
-				return "", "", nil, fmt.Errorf("Use -m do, -m align, or -m box.")
+				return "", "", nil, fmt.Errorf("Use -m do, -m align, -m box, or -m nlp.")
 			}
 		case "-c", "-r", "-u", "-d":
 			if op != "" {
@@ -158,7 +161,7 @@ func parseModeOp(args []string) (string, string, []string, error) {
 		return "", "", nil, fmt.Errorf("Unknown command. Run: crusade help")
 	}
 	if mode == "" {
-		return "", "", nil, fmt.Errorf("Usage: crusade -m do|align|box [-c|-r|-u|-d] [args]")
+		return "", "", nil, fmt.Errorf("Usage: crusade -m do|align|box|nlp [-c|-r|-u|-d] [args]")
 	}
 	if op == "" {
 		if len(rest) != 0 {

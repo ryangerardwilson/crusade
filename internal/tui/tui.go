@@ -80,7 +80,7 @@ type sessionState struct {
 	status           string
 }
 
-// modeMemory keeps the do, align, and box screens while tab moves between them.
+// modeMemory keeps each mode's screen while tab moves between them.
 type modeMemory struct {
 	do       sessionState
 	align    sessionState
@@ -88,6 +88,8 @@ type modeMemory struct {
 	hasAlign bool
 	box      *boxModel
 	hasBox   bool
+	nlp      *nlpMode
+	hasNlp   bool
 }
 
 type helpItem struct {
@@ -155,7 +157,7 @@ var openTaskEditor = func(path string, id int, draft bool) tea.Cmd {
 
 var (
 	titleStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("51"))
-	badgeStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("16")).Background(lipgloss.Color("51"))
+	badgeStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("16")).Background(lipgloss.Color("51"))
 	mutedStyle      = lipgloss.NewStyle().Faint(true)
 	infoStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("51"))
 	sectionStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("51"))
@@ -169,6 +171,9 @@ var (
 
 func Run(dataPath, mode string, stdout, stderr io.Writer) int {
 	rememberMode(dataPath, mode)
+	if mode == model.ModeNLP {
+		return runNLP(dataPath, stdout, stderr)
+	}
 	if mode == model.ModeBox {
 		return runBox(dataPath, stdout, stderr)
 	}
@@ -694,25 +699,17 @@ func (m appModel) cycleMode() (tea.Model, tea.Cmd) {
 }
 
 func (m boxModel) cycleMode() (tea.Model, tea.Cmd) {
-	records, err := store.Load(m.dataPath)
-	if err != nil {
-		m.errText = err.Error()
-		return m, nil
-	}
 	mem := m.memory
 	saved := m
 	saved.memory = modeMemory{}
 	mem.box = &saved
 	mem.hasBox = true
-	next := newAppModel(m.dataPath, records)
-	next.width = m.width
-	next.height = m.height
-	next.memory = mem
-	if mem.hasDo {
-		next.restoreSession(mem.do)
+	next, err := openNLPMode(m.dataPath, m.width, m.height, mem)
+	if err != nil {
+		m.errText = err.Error()
+		return m, nil
 	}
-	next.clampState()
-	rememberMode(m.dataPath, model.ModeDo)
+	rememberMode(m.dataPath, model.ModeNLP)
 	return next, nil
 }
 
@@ -934,7 +931,7 @@ func (m appModel) doPrompt() string {
 
 func (m appModel) helpGeneral() []helpItem {
 	items := []helpItem{
-		{key: "tab", description: "Do / align / box"},
+		{key: "tab", description: "Do / align / box / nlp"},
 		{key: "a", description: "Agenda / month"},
 		{key: "t", description: "Jump to today"},
 	}
@@ -965,7 +962,7 @@ func (m appModel) helpFooter() string {
 			mutedStyle.Render("n adds a task for today, or for the selected day in the open month"),
 			mutedStyle.Render("e edits the text · r reschedules the selected task"),
 			mutedStyle.Render("While typing: ctrl+a/e/b/f/h/d, alt+b/f"),
-			mutedStyle.Render("tab cycles do, align, and box"),
+			mutedStyle.Render("tab cycles do, align, box, and nlp"),
 		)
 	}
 	return lipgloss.JoinVertical(
@@ -973,7 +970,7 @@ func (m appModel) helpFooter() string {
 		sectionStyle.Render("VIM TASK FILE"),
 		mutedStyle.Render("n adds on the selected date · e edits the selected task"),
 		mutedStyle.Render("Vim edits that one outcome, then crusade saves it"),
-		mutedStyle.Render("tab cycles do, align, and box"),
+		mutedStyle.Render("tab cycles do, align, box, and nlp"),
 	)
 }
 

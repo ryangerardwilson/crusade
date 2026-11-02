@@ -486,7 +486,7 @@ func SaveLastMode(dbPath, mode string) error {
 
 func knownMode(mode string) bool {
 	switch mode {
-	case model.ModeDo, model.ModeAlign, model.ModeBox:
+	case model.ModeDo, model.ModeAlign, model.ModeBox, model.ModeNLP:
 		return true
 	default:
 		return false

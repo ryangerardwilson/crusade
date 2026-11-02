@@ -960,8 +960,11 @@ func TestSpaceMarksTheSelectedTaskDone(t *testing.T) {
 }
 
 func TestTabCyclesDoAlignAndBox(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "crusade.sqlite")
+	root := t.TempDir()
+	path := filepath.Join(root, "crusade.sqlite")
 	t.Setenv("BOXES_CONFIG", "")
+	t.Setenv("HOME", root)
+	t.Setenv("SQLX_ROOT", filepath.Join(root, "sqlx"))
 	doEvent, err := model.NewDoEvent("2026-06-13 23:59:59", "mail the letter")
 	if err != nil {
 		t.Fatal(err)
@@ -1006,6 +1009,14 @@ func TestTabCyclesDoAlignAndBox(t *testing.T) {
 	}
 	box.showHelp = true
 	next, cmd = box.Update(tab)
+	practice, ok := next.(nlpMode)
+	if !ok || cmd != nil || practice.width != 60 || !strings.Contains(practice.View(), "NLP") {
+		t.Fatalf("nlp width=%d type=%T cmd=%v", practice.width, next, cmd != nil)
+	}
+	if mode, err := store.LastMode(path); err != nil || mode != model.ModeNLP {
+		t.Fatalf("last mode after nlp = %q err=%v", mode, err)
+	}
+	next, cmd = practice.Update(tab)
 	do, ok := next.(appModel)
 	if !ok || cmd != nil || do.mode != modeDo || do.width != 60 {
 		t.Fatalf("do mode=%q width=%d type=%T cmd=%v", do.mode, do.width, next, cmd != nil)
@@ -1045,8 +1056,11 @@ func TestTabToBoxStaysInAlignWhenTheDatabaseCannotOpen(t *testing.T) {
 }
 
 func TestTabRestoresEachMode(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "crusade.sqlite")
+	root := t.TempDir()
+	path := filepath.Join(root, "crusade.sqlite")
 	t.Setenv("BOXES_CONFIG", "")
+	t.Setenv("HOME", root)
+	t.Setenv("SQLX_ROOT", filepath.Join(root, "sqlx"))
 	doOne, err := model.NewDoEvent("2026-06-13 23:59:59", "mail the letter")
 	if err != nil {
 		t.Fatal(err)
@@ -1102,6 +1116,11 @@ func TestTabRestoresEachMode(t *testing.T) {
 	box.showHelp = true
 
 	next, cmd = box.Update(tab)
+	practice, ok := next.(nlpMode)
+	if !ok || cmd != nil || !strings.Contains(practice.View(), "NLP") {
+		t.Fatalf("nlp type=%T", next)
+	}
+	next, cmd = practice.Update(tab)
 	do, ok := next.(appModel)
 	if !ok || cmd != nil || do.mode != modeDo || do.view != viewMonth || do.monthDate.Format(time.DateOnly) != "2026-04-02" || do.agendaCursor != 1 || do.status != "do place" || !do.showHelp {
 		t.Fatalf("restored do mode=%s view=%s date=%s cursor=%d status=%q help=%v", do.mode, do.view, do.monthDate.Format(time.DateOnly), do.agendaCursor, do.status, do.showHelp)

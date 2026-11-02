@@ -27,7 +27,7 @@ func TestNoArgsMatchesHelp(t *testing.T) {
 	if noArgs.String() != help.String() {
 		t.Fatalf("no args output differed from help")
 	}
-	if !strings.Contains(help.String(), "open a mode:") || !strings.Contains(help.String(), "crusade -m box") || !strings.Contains(help.String(), "crusade -m align -r limit 10") || !strings.Contains(help.String(), "crusade -m do -c") || !strings.Contains(help.String(), "resume the last mode") {
+	if !strings.Contains(help.String(), "open a mode:") || !strings.Contains(help.String(), "crusade -m box") || !strings.Contains(help.String(), "crusade -m nlp") || !strings.Contains(help.String(), "crusade -m align -r limit 10") || !strings.Contains(help.String(), "crusade -m do -c") || !strings.Contains(help.String(), "resume the last mode") {
 		t.Fatalf("help output missing expected contract text:\n%s", help.String())
 	}
 	if strings.Contains(help.String(), "\x1b") {

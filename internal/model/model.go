@@ -14,6 +14,7 @@ const (
 	ModeAlign = "align"
 	ModeDo    = "do"
 	ModeBox   = "box"
+	ModeNLP   = "nlp"
 )
 
 type Event struct {

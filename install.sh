@@ -112,6 +112,7 @@ write_legacy_launcher() {
   write_named_launcher xyz
   write_named_launcher xecute
   write_boxes_launcher
+  write_nlp_launcher
 }
 
 write_named_launcher() {
@@ -148,6 +149,26 @@ if [[ \$# -eq 0 ]]; then
   exec "${INSTALL_DIR}/${APP}" -m box
 fi
 exec "${INSTALL_DIR}/${APP}" -m box "\$@"
+EOF
+  chmod 755 "$legacy"
+}
+
+write_nlp_launcher() {
+  local legacy="$PUBLIC_BIN_DIR/nlp"
+  if [[ -e "$legacy" && ! -L "$legacy" && ! -f "$legacy" ]]; then
+    return 0
+  fi
+  if [[ -f "$legacy" ]] && ! grep -Fq "Managed by" "$legacy"; then
+    return 0
+  fi
+  cat > "$legacy" <<EOF
+#!/usr/bin/env bash
+# Managed by ${APP} installer local-bin launcher
+set -euo pipefail
+if [[ \$# -eq 0 ]]; then
+  exec "${INSTALL_DIR}/${APP}" -m nlp
+fi
+exec "${INSTALL_DIR}/${APP}" -m nlp "\$@"
 EOF
   chmod 755 "$legacy"
 }

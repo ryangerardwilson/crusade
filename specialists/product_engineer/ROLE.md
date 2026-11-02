@@ -29,7 +29,8 @@ Current structure:
 - `internal/model/`: datetime, metric, and JSON validation.
 - `internal/box/`: checklist outline, parent completion, and check toggles.
 - `internal/store/`: the sqlx database `crusade`, plus a one-time boxes import.
-- `internal/tui/`: Bubble Tea do, align, and box surfaces.
+- `internal/tui/`: Bubble Tea do, align, box, and nlp surfaces.
+- `nlp/`: the practice-session mode. Sessions stay in the sqlx database `nlp`.
 - `internal/version/`: release-time version variable.
 - `install.sh`: release/local-source installer.
 - `push_release_upgrade.sh`: push, tag, publish release asset, install from GitHub.
@@ -69,7 +70,7 @@ model task
   done integer not null
 ```
 
-`-r` prints each stable `id`. `-u <id>` and `-d <id>` target that id and stay on the selected mode. In align mode, TUI `n` and `e` suspend Bubble Tea, open Vim on that one record, and save the row after validation. In do mode, `e` edits the task text and `r` reschedules the selected task. The do agenda and the do month show how many do tasks are marked done in the current week. That week starts on Monday and ends on Sunday. `crusade -m box -c` and `crusade -m box -u` open Vim on the whole outline as YAML and save every box. In box mode, TUI `e` does the same. Do and align lists are checkbox rows drawn from the top. Space marks the selected task done and leaves it in the list. `dd` still deletes it. Box shortcuts appear only while `?` is open. Do, align, and box use the same blue badge in the top right. `q` quits the TUI. While a do task is being typed, `q` is a letter. Tab cycles do, align, and box, and returns each mode to the screen you left. crusade open resumes the last mode, or do when none is saved. Below the box list, a momentum graph draws checked days as a contribution calendar: weeks are columns, weekdays are rows, bluer squares mean more boxes checked, and the caption is the current streak.
+`-r` prints each stable `id`. `-u <id>` and `-d <id>` target that id and stay on the selected mode. In align mode, TUI `n` and `e` suspend Bubble Tea, open Vim on that one record, and save the row after validation. In do mode, `e` edits the task text and `r` reschedules the selected task. The do agenda and the do month show how many do tasks are marked done in the current week. That week starts on Monday and ends on Sunday. `crusade -m box -c` and `crusade -m box -u` open Vim on the whole outline as YAML and save every box. In box mode, TUI `e` does the same. Do and align lists are checkbox rows drawn from the top. Space marks the selected task done and leaves it in the list. `dd` still deletes it. Box shortcuts appear only while `?` is open. Do, align, box, and nlp use the same blue badge in the top right. `q` quits the TUI. While a do task is being typed, `q` is a letter. Tab cycles do, align, box, and nlp, and returns each mode to the screen you left. Tab stays put while a do task is being typed and while an nlp session is being named or typed. crusade open resumes the last mode, or do when none is saved. The `nlp` command opens the practice list. Practice sessions stay in the sqlx database `nlp`. Below the box list, a momentum graph draws checked days as a contribution calendar: weeks are columns, weekdays are rows, bluer squares mean more boxes checked, and the caption is the current streak.
 
 ## Release Constraints
 

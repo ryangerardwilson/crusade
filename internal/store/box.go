@@ -56,7 +56,7 @@ const createMeta = `CREATE TABLE IF NOT EXISTS meta (
 )`
 
 func ormText() string {
-	return taskModel + "\n" + boxModel + "\n" + boxCheckModel + "\n" + metaModel
+	return taskModel + "\n" + boxModel + "\n" + boxCheckModel + "\n" + metaModel + "\n" + blockModel + "\n" + repeatModel + "\n" + repeatChangeModel + "\n" + deletionModel
 }
 
 func ormUpsertSQL() string {
@@ -69,6 +69,10 @@ func ormUpsertSQL() string {
 		{"box", boxModel, 1},
 		{"box_check", boxCheckModel, 2},
 		{"meta", metaModel, 3},
+		{"block", blockModel, 4},
+		{"repeat", repeatModel, 5},
+		{"repeat_change", repeatChangeModel, 6},
+		{"deletion", deletionModel, 7},
 	}
 	var b strings.Builder
 	for _, model := range models {
@@ -486,7 +490,7 @@ func SaveLastMode(dbPath, mode string) error {
 
 func knownMode(mode string) bool {
 	switch mode {
-	case model.ModeDo, model.ModeAlign, model.ModeBox, model.ModeNLP:
+	case model.ModeDo, model.ModeAlign, model.ModeBox, model.ModeCal, model.ModeNLP:
 		return true
 	default:
 		return false
@@ -495,7 +499,7 @@ func knownMode(mode string) bool {
 
 func nextTableID(dbPath, table string) (int, error) {
 	switch table {
-	case "box", "box_check", "meta", "task":
+	case "box", "box_check", "meta", "task", "repeat", "repeat_change":
 	default:
 		return 0, fmt.Errorf("unknown table %s", table)
 	}

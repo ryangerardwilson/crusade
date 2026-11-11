@@ -321,3 +321,152 @@ func normalizeID(label string) string {
 	}
 	return strings.Trim(b.String(), "-_")
 }
+
+// InsertAfter adds a box at the same level as selectedID, immediately after it.
+// An empty outline ignores selectedID and adds the first box.
+func (o Outline) InsertAfter(selectedID, label string) (Outline, string, error) {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return o, "", fmt.Errorf("box text cannot be empty")
+	}
+	if len(o.Items) == 0 {
+		id, err := childID("", label)
+		if err != nil {
+			return o, "", err
+		}
+		o.Items = []Item{{ID: id, Label: label}}
+		return o, id, nil
+	}
+	parent, ok := findParent(o.Items, selectedID, "")
+	if !ok {
+		return o, "", fmt.Errorf("selected box was not found")
+	}
+	id, err := childID(parent, label)
+	if err != nil {
+		return o, "", err
+	}
+	if _, exists := o.ItemByID(id); exists {
+		return o, "", fmt.Errorf("a box named %q already exists", label)
+	}
+	items, ok := insertAfterID(o.Items, selectedID, Item{ID: id, Label: label})
+	if !ok {
+		return o, "", fmt.Errorf("selected box was not found")
+	}
+	o.Items = items
+	if err := o.Validate(); err != nil {
+		return Outline{}, "", err
+	}
+	return o, id, nil
+}
+
+// Rename changes the label and keeps the id, so existing checks stay with the box.
+func (o Outline) Rename(id, label string) (Outline, error) {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return o, fmt.Errorf("box text cannot be empty")
+	}
+	items, ok := renameID(o.Items, id, label)
+	if !ok {
+		return o, fmt.Errorf("selected box was not found")
+	}
+	o.Items = items
+	if err := o.Validate(); err != nil {
+		return Outline{}, err
+	}
+	return o, nil
+}
+
+// Delete removes the box and every box under it.
+func (o Outline) Delete(id string) (Outline, error) {
+	items, ok := deleteID(o.Items, id)
+	if !ok {
+		return o, fmt.Errorf("selected box was not found")
+	}
+	o.Items = items
+	return o, nil
+}
+
+func childID(parent, label string) (string, error) {
+	slug := normalizeID(label)
+	if slug == "" {
+		return "", fmt.Errorf("box text must contain a letter or number")
+	}
+	if parent == "" {
+		return slug, nil
+	}
+	return parent + "/" + slug, nil
+}
+
+func findParent(items []Item, id, parent string) (string, bool) {
+	for _, item := range items {
+		if item.ID == id {
+			return parent, true
+		}
+		if found, ok := findParent(item.Children, id, item.ID); ok {
+			return found, true
+		}
+	}
+	return "", false
+}
+
+func insertAfterID(items []Item, id string, created Item) ([]Item, bool) {
+	for index, item := range items {
+		if item.ID == id {
+			next := make([]Item, 0, len(items)+1)
+			next = append(next, items[:index+1]...)
+			next = append(next, created)
+			next = append(next, items[index+1:]...)
+			return next, true
+		}
+		kids, ok := insertAfterID(item.Children, id, created)
+		if !ok {
+			continue
+		}
+		item.Children = kids
+		next := append([]Item{}, items...)
+		next[index] = item
+		return next, true
+	}
+	return items, false
+}
+
+func renameID(items []Item, id, label string) ([]Item, bool) {
+	for index, item := range items {
+		if item.ID == id {
+			item.Label = label
+			next := append([]Item{}, items...)
+			next[index] = item
+			return next, true
+		}
+		kids, ok := renameID(item.Children, id, label)
+		if !ok {
+			continue
+		}
+		item.Children = kids
+		next := append([]Item{}, items...)
+		next[index] = item
+		return next, true
+	}
+	return items, false
+}
+
+func deleteID(items []Item, id string) ([]Item, bool) {
+	next := make([]Item, 0, len(items))
+	found := false
+	for _, item := range items {
+		if item.ID == id {
+			found = true
+			continue
+		}
+		kids, ok := deleteID(item.Children, id)
+		if ok {
+			item.Children = kids
+			found = true
+		}
+		next = append(next, item)
+	}
+	if !found {
+		return items, false
+	}
+	return next, true
+}

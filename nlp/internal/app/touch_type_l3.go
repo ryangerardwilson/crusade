@@ -32,8 +32,13 @@ func (m model) updateTypeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.screen = screenCourses
 		m.status = "ready"
-	case "ctrl+r":
-		m.resetTyping()
+	case "ctrl+n":
+		if !m.typeDone {
+			m.setCurrentTypeInput(m.currentTypeTarget())
+			m.advanceTypeLine()
+		}
+	case "ctrl+p":
+		m.previousTypeLine()
 	case "backspace", "ctrl+h":
 		if !m.typeDone && !m.currentTypeLineIsSkip() {
 			m.setCurrentTypeInput(trimLastRune(m.currentTypeInput()))
@@ -76,7 +81,7 @@ func (m model) updateTypeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.setCurrentTypeInput(input)
 		}
 	}
-	if m.screen == screenType && m.allTypeLinesComplete() {
+	if key != "ctrl+p" && m.screen == screenType && m.allTypeLinesComplete() {
 		m.typeDone = true
 		m.cursorShown = true
 		m.status = "lesson complete"
@@ -137,21 +142,6 @@ func (m model) renderType() string {
 	return out.String()
 }
 
-func (m *model) resetTyping() {
-	if len(m.typeInputs) != len(m.typeLines) {
-		m.typeInputs = make([]string, len(m.typeLines))
-	} else {
-		for i := range m.typeInputs {
-			m.typeInputs[i] = ""
-		}
-	}
-	m.typed = ""
-	m.typeLine = 0
-	m.typeDone = false
-	m.cursorShown = true
-	m.status = "typing reset"
-}
-
 func (m model) currentTypeInput() string {
 	if len(m.typeInputs) == 0 {
 		return m.typed
@@ -178,6 +168,27 @@ func (m model) currentTypeLineIsSkip() bool {
 		return false
 	}
 	return m.typeSkip[clamp(m.typeLine, 0, len(m.typeSkip)-1)]
+}
+
+func (m *model) previousTypeLine() {
+	if len(m.typeLines) == 0 {
+		return
+	}
+	m.typeDone = false
+	m.clearTypeInput(m.typeLine)
+	if m.typeLine > 0 {
+		m.typeLine--
+		m.clearTypeInput(m.typeLine)
+	}
+	m.typed = ""
+	m.cursorShown = true
+	m.status = "previous line"
+}
+
+func (m *model) clearTypeInput(index int) {
+	if index >= 0 && index < len(m.typeInputs) {
+		m.typeInputs[index] = ""
+	}
 }
 
 func (m *model) advanceTypeLine() {

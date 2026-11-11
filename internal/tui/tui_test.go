@@ -31,16 +31,16 @@ func TestAgendaRendersCheckboxList(t *testing.T) {
 		"crusade",
 		"ALIGN",
 		"selected 1/3",
-		"score 8/10",
+		"June 13, 2026 (Saturday)",
+		"2026-06-13",
 		"[ ]",
-		"2026-06-13 23:59",
 		"2026-06-13  Have a body fat",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("agenda output missing %q:\n%s", want, out)
 		}
 	}
-	for _, hidden := range []string{"nsm", " outcomes ", "Increase my chances", "0.8"} {
+	for _, hidden := range []string{"nsm", "score", "23:59", " outcomes ", "Increase my chances", "0.8"} {
 		if strings.Contains(out, hidden) {
 			t.Fatalf("agenda still shows %q:\n%s", hidden, out)
 		}
@@ -68,8 +68,8 @@ func TestMonthViewRendersGridAndSelectedDayEvents(t *testing.T) {
 	for _, want := range []string{
 		"crusade",
 		"ALIGN",
-		"Sat 2026-06-13",
-		"top score 8/10",
+		"June 13, 2026 (Saturday)",
+		"1 outcome",
 		"June, 2026",
 		"selected day",
 		"Mon",
@@ -159,9 +159,13 @@ func TestHelpViewStartsAtTheTopLeft(t *testing.T) {
 		t.Fatalf("help still uses the old undifferentiated shortcut list:\n%s", out)
 	}
 
+	lines := strings.Split(stripANSI(out), "\n")
+	if len(lines) == 0 || !strings.HasPrefix(lines[0], "crusade") || strings.Contains(lines[0], "QUICK GUIDE") {
+		t.Fatalf("help replaced the screen:\n%s", out)
+	}
 	firstBorder := -1
 	lastBorder := -1
-	for _, line := range strings.Split(out, "\n") {
+	for _, line := range lines {
 		if !strings.ContainsAny(line, "╭│╰") {
 			continue
 		}
@@ -171,11 +175,54 @@ func TestHelpViewStartsAtTheTopLeft(t *testing.T) {
 		}
 		lastBorder = border
 		if border != firstBorder {
-			t.Fatalf("help panel border shifted from column %d to %d:\n%s", firstBorder, border, out)
+			t.Fatalf("help modal border shifted from column %d to %d:\n%s", firstBorder, border, out)
 		}
 	}
-	if firstBorder != 0 || lastBorder != firstBorder {
-		t.Fatalf("help panel does not start at the left edge:\n%s", out)
+	if firstBorder <= 0 || lastBorder != firstBorder {
+		t.Fatalf("help modal is not inset:\n%s", out)
+	}
+}
+
+func TestQuestionTogglesShortcutModal(t *testing.T) {
+	m := appModel{
+		mode:    modeDo,
+		view:    viewAgenda,
+		width:   100,
+		height:  36,
+		records: sampleRecords(t),
+	}
+	if strings.Contains(m.View(), "QUICK GUIDE") {
+		t.Fatal("guide was already open")
+	}
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	got, ok := next.(appModel)
+	if cmd != nil || !ok || !got.showHelp {
+		t.Fatalf("open cmd=%v ok=%v", cmd != nil, ok)
+	}
+	view := stripANSI(got.View())
+	if !strings.Contains(view, "QUICK GUIDE") || !strings.Contains(view, "Close this guide") || !strings.HasPrefix(strings.Split(view, "\n")[0], "crusade") {
+		t.Fatalf("modal:\n%s", view)
+	}
+	cursor := got.agendaCursor
+	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	got, ok = next.(appModel)
+	if cmd != nil || !ok || !got.showHelp || got.agendaCursor != cursor {
+		t.Fatalf("j moved the list help=%v cursor=%d", ok && got.showHelp, got.agendaCursor)
+	}
+	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	got, ok = next.(appModel)
+	if cmd != nil || !ok || got.showHelp || strings.Contains(got.View(), "QUICK GUIDE") {
+		t.Fatalf("close help=%v\n%s", ok && got.showHelp, got.View())
+	}
+	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	got, ok = next.(appModel)
+	if cmd != nil || !ok || !got.showHelp {
+		t.Fatalf("reopen cmd=%v ok=%v", cmd != nil, ok)
+	}
+	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	got, ok = next.(appModel)
+	if cmd != nil || !ok || got.showHelp {
+		t.Fatalf("esc quit cmd=%v help=%v", cmd != nil, ok && got.showHelp)
 	}
 }
 
@@ -294,41 +341,29 @@ func sampleRecords(t *testing.T) []store.Record {
 		x  string
 		y  string
 		z  string
-		p  string
-		q  string
-		r  string
 	}{
 		{
 			id: 1,
-			x:  "2026-06-13 23:59:59",
+			x:  "2026-06-13",
 			y:  "Have a body fat % of 23.5, 33 kg of muscle, and a visceral fat level of 16",
 			z:  "Increase my chances of living longer to serve the Lord, and also to look great in swimwear",
-			p:  "9",
-			q:  "9",
-			r:  "6",
 		},
 		{
 			id: 2,
-			x:  "2026-12-31 23:59:59",
+			x:  "2026-12-31",
 			y:  "Learned open water swimming",
 			z:  "So I can flex during beach vacations doing crazy stuff",
-			p:  "6.5",
-			q:  "6.5",
-			r:  "9",
 		},
 		{
 			id: 3,
-			x:  "2027-03-01 23:59:59",
+			x:  "2027-03-01",
 			y:  "Ship a useful thing",
 			z:  "Make the operating system stronger",
-			p:  "7",
-			q:  "8",
-			r:  "9",
 		},
 	}
 	records := make([]store.Record, 0, len(rows))
 	for _, row := range rows {
-		event, err := model.NewEvent(row.x, row.y, row.z, row.p, row.q, row.r)
+		event, err := model.NewEvent(row.x, row.y, row.z)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -393,10 +428,6 @@ func TestEscapeQuitsFromNestedTUIState(t *testing.T) {
 			monthDate:  sampleDate(2026, time.June, 13),
 			monthFocus: monthFocusEvents,
 		},
-		"help": {
-			view:     viewAgenda,
-			showHelp: true,
-		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
@@ -404,6 +435,12 @@ func TestEscapeQuitsFromNestedTUIState(t *testing.T) {
 				t.Fatal("esc did not return tea.Quit")
 			}
 		})
+	}
+	help := appModel{view: viewAgenda, showHelp: true}
+	next, cmd := help.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	got, ok := next.(appModel)
+	if cmd != nil || !ok || got.showHelp {
+		t.Fatalf("esc quit the guide cmd=%v help=%v", cmd != nil, ok && got.showHelp)
 	}
 }
 
@@ -633,6 +670,7 @@ func TestDoAgendaHidesScores(t *testing.T) {
 	for _, want := range []string{
 		"crusade",
 		"DO",
+		"June 13, 2026 (Saturday)",
 		"2026-06-13  Have a body fat",
 	} {
 		if !strings.Contains(out, want) {
@@ -969,7 +1007,7 @@ func TestTabCyclesDoAlignAndBox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	alignEvent, err := model.NewEvent("2026-06-14 23:59:59", "ship the patch", "reduce drift", "7", "8", "6")
+	alignEvent, err := model.NewEvent("2026-06-14 23:59:59", "ship the patch", "reduce drift")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1009,6 +1047,14 @@ func TestTabCyclesDoAlignAndBox(t *testing.T) {
 	}
 	box.showHelp = true
 	next, cmd = box.Update(tab)
+	cal, ok := next.(calModel)
+	if !ok || cmd != nil || cal.width != 60 || !strings.Contains(cal.View(), "CAL") {
+		t.Fatalf("cal width=%d type=%T cmd=%v", cal.width, next, cmd != nil)
+	}
+	if mode, err := store.LastMode(path); err != nil || mode != model.ModeCal {
+		t.Fatalf("last mode after cal = %q err=%v", mode, err)
+	}
+	next, cmd = cal.Update(tab)
 	practice, ok := next.(nlpMode)
 	if !ok || cmd != nil || practice.width != 60 || !strings.Contains(practice.View(), "NLP") {
 		t.Fatalf("nlp width=%d type=%T cmd=%v", practice.width, next, cmd != nil)
@@ -1069,11 +1115,11 @@ func TestTabRestoresEachMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	alignOne, err := model.NewEvent("2026-06-14 23:59:59", "ship the patch", "reduce drift", "7", "8", "6")
+	alignOne, err := model.NewEvent("2026-06-14 23:59:59", "ship the patch", "reduce drift")
 	if err != nil {
 		t.Fatal(err)
 	}
-	alignTwo, err := model.NewEvent("2026-07-01 23:59:59", "write the note", "keep the trail", "5", "5", "5")
+	alignTwo, err := model.NewEvent("2026-07-01 23:59:59", "write the note", "keep the trail")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1116,6 +1162,16 @@ func TestTabRestoresEachMode(t *testing.T) {
 	box.showHelp = true
 
 	next, cmd = box.Update(tab)
+	cal, ok := next.(calModel)
+	if !ok || cmd != nil || !sameDate(cal.day, dateOnly(time.Now())) || cal.selected != 0 || cal.status != "" || cal.showHelp {
+		t.Fatalf("first cal day=%s selected=%d status=%q help=%v", cal.day.Format(time.DateOnly), cal.selected, cal.status, cal.showHelp)
+	}
+	cal.day = dateOnly(time.Date(2026, 11, 6, 0, 0, 0, 0, time.Local))
+	cal.selected = 1
+	cal.status = "cal place"
+	cal.showHelp = true
+
+	next, cmd = cal.Update(tab)
 	practice, ok := next.(nlpMode)
 	if !ok || cmd != nil || !strings.Contains(practice.View(), "NLP") {
 		t.Fatalf("nlp type=%T", next)
@@ -1128,7 +1184,7 @@ func TestTabRestoresEachMode(t *testing.T) {
 
 	next, cmd = do.Update(tab)
 	align, ok = next.(appModel)
-	if !ok || cmd != nil || align.mode != modeAlign || align.view != viewMonth || align.monthDate.Format(time.DateOnly) != "2026-08-09" || align.agendaCursor != 1 || align.status != "align place" || !align.showHelp {
+	if !ok || cmd != nil || align.mode != modeAlign || align.view != viewAgenda || align.monthDate.Format(time.DateOnly) != "2026-08-09" || align.agendaCursor != 1 || align.status != "align place" || !align.showHelp {
 		t.Fatalf("restored align mode=%s view=%s date=%s cursor=%d status=%q help=%v", align.mode, align.view, align.monthDate.Format(time.DateOnly), align.agendaCursor, align.status, align.showHelp)
 	}
 
@@ -1136,6 +1192,17 @@ func TestTabRestoresEachMode(t *testing.T) {
 	box, ok = next.(boxModel)
 	if !ok || cmd != nil || box.day != "2026-09-03" || box.selected != 2 || box.status != "box place" || !box.showHelp {
 		t.Fatalf("restored box day=%s selected=%d status=%q help=%v", box.day, box.selected, box.status, box.showHelp)
+	}
+
+	next, cmd = box.Update(tab)
+	cal, ok = next.(calModel)
+	if !ok || cmd != nil || cal.day.Format(time.DateOnly) != "2026-11-06" || cal.selected != 1 || cal.status != "cal place" || !cal.showHelp {
+		t.Fatalf("restored cal day=%s selected=%d status=%q help=%v", cal.day.Format(time.DateOnly), cal.selected, cal.status, cal.showHelp)
+	}
+	next, cmd = cal.Update(tab)
+	practice, ok = next.(nlpMode)
+	if !ok || cmd != nil || !strings.Contains(practice.View(), "NLP") {
+		t.Fatalf("restored nlp type=%T", next)
 	}
 }
 
@@ -1165,7 +1232,7 @@ func TestDoneThisWeekStartsOnMonday(t *testing.T) {
 		doRecordAt(t, 4, previousSunday, true, "last week"),
 		doRecordAt(t, 5, nextMonday, true, "next week"),
 	}
-	align, err := model.NewEvent("2026-06-17 23:59:59", "align outcome", "because", "1", "1", "1")
+	align, err := model.NewEvent("2026-06-17 23:59:59", "align outcome", "because")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1197,7 +1264,7 @@ func TestDoModeShowsDoneThisWeek(t *testing.T) {
 		records: records,
 	}
 	out := stripANSI(agenda.View())
-	if !strings.Contains(out, "2 done this week") {
+	if !strings.Contains(out, "2 items done and 0 deleted this week") {
 		t.Fatalf("agenda missing week count:\n%s", out)
 	}
 	month := agenda
@@ -1205,11 +1272,11 @@ func TestDoModeShowsDoneThisWeek(t *testing.T) {
 	month.monthDate = monday
 	month.monthFocus = monthFocusGrid
 	out = stripANSI(month.View())
-	if !strings.Contains(out, "2 done this week") {
+	if !strings.Contains(out, "2 items done and 0 deleted this week") {
 		t.Fatalf("month missing week count:\n%s", out)
 	}
 	empty := appModel{mode: modeDo, view: viewAgenda, width: 90, height: 24}
-	if !strings.Contains(stripANSI(empty.View()), "0 done this week") {
+	if !strings.Contains(stripANSI(empty.View()), "0 items done and 0 deleted this week") {
 		t.Fatalf("empty agenda missing week count:\n%s", empty.View())
 	}
 	alignView := agenda
@@ -1226,5 +1293,149 @@ func doRecordAt(t *testing.T, id int, when time.Time, done bool, outcome string)
 		t.Fatal(err)
 	}
 	event.Done = done
+	if done {
+		event.DoneAt = when
+	}
 	return store.Record{ID: id, Event: event}
+}
+
+func TestMarkingAnOlderTaskDoneUpdatesThisWeekCount(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("SQLX_ROOT", root)
+	t.Setenv("BOXES_CONFIG", filepath.Join(t.TempDir(), "missing.txt"))
+	db := store.DatabasePath()
+	event, err := model.NewDoEvent("2026-10-22 23:59:59", "fold clothes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(db, []store.Record{{ID: 1, Event: event}}); err != nil {
+		t.Fatal(err)
+	}
+	records, err := store.Load(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newAppModel(db, records)
+	m.width = 80
+	m.height = 24
+	if !strings.Contains(stripANSI(m.View()), "0 items done and 0 deleted this week") {
+		t.Fatalf("open count:\n%s", m.View())
+	}
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	got := next.(appModel)
+	if !strings.Contains(stripANSI(got.View()), "1 item done and 0 deleted this week") {
+		t.Fatalf("count did not update:\n%s", got.View())
+	}
+	loaded, err := store.Load(db)
+	if err != nil || len(loaded) != 1 || !loaded[0].Event.Done || !sameDate(loaded[0].Event.DoneAt, time.Now()) {
+		t.Fatalf("stored done=%v at=%v err=%v", len(loaded) == 1 && loaded[0].Event.Done, loaded[0].Event.DoneAt, err)
+	}
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	got = next.(appModel)
+	if !strings.Contains(stripANSI(got.View()), "0 items done and 0 deleted this week") {
+		t.Fatalf("count did not clear:\n%s", got.View())
+	}
+}
+
+func TestDeletingADoTaskCountsThisWeek(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("SQLX_ROOT", root)
+	t.Setenv("BOXES_CONFIG", filepath.Join(t.TempDir(), "missing.txt"))
+	db := store.DatabasePath()
+	event, err := model.NewDoEvent("2026-10-22 23:59:59", "fold clothes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	event.Done = true
+	event.DoneAt = time.Now()
+	open, err := model.NewDoEvent("2026-11-03 23:59:59", "write the note")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(db, []store.Record{{ID: 1, Event: event}, {ID: 2, Event: open}}); err != nil {
+		t.Fatal(err)
+	}
+	records, err := store.Load(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newAppModel(db, records)
+	m.width = 90
+	m.height = 24
+	if !strings.Contains(stripANSI(m.View()), "1 item done and 0 deleted this week") {
+		t.Fatalf("before delete:\n%s", m.View())
+	}
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	got := next.(appModel)
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	got = next.(appModel)
+	if !strings.Contains(stripANSI(got.View()), "0 items done and 1 deleted this week") {
+		t.Fatalf("after deleting the done task:\n%s", got.View())
+	}
+	if strings.Contains(stripANSI(got.View()), "fold clothes") {
+		t.Fatalf("deleted task still listed:\n%s", got.View())
+	}
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	got = next.(appModel)
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	got = next.(appModel)
+	if !strings.Contains(stripANSI(got.View()), "0 items done and 2 deleted this week") {
+		t.Fatalf("after deleting the open task:\n%s", got.View())
+	}
+	align, err := model.NewEvent("2026-06-01 00:00", "align outcome", "because")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := store.AddRecord(db, align)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(db, id); err != nil {
+		t.Fatal(err)
+	}
+	got.refreshWeekDeleted()
+	if !strings.Contains(stripANSI(got.View()), "0 items done and 2 deleted this week") {
+		t.Fatalf("align delete changed the do count:\n%s", got.View())
+	}
+}
+
+func TestAlignModeIsAList(t *testing.T) {
+	records := sampleRecords(t)
+	align := appModel{
+		mode:       modeAlign,
+		view:       viewMonth,
+		width:      90,
+		height:     36,
+		records:    records,
+		monthDate:  sampleDate(2026, time.June, 13),
+		monthFocus: monthFocusGrid,
+	}
+	out := stripANSI(align.View())
+	if strings.Contains(out, "June, 2026") || !strings.Contains(out, "Have a body fat") {
+		t.Fatalf("align month leaked:\n%s", out)
+	}
+	next, cmd := align.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	got, ok := next.(appModel)
+	if cmd != nil || !ok || got.mode != modeAlign || got.view != viewAgenda || strings.Contains(stripANSI(got.View()), "June, 2026") {
+		t.Fatalf("align a opened a calendar view=%s\n%s", got.view, got.View())
+	}
+	help := appModel{mode: modeAlign, showHelp: true, width: 120, height: 40}
+	helpOut := help.View()
+	if strings.Contains(helpOut, "MONTH") || strings.Contains(helpOut, "Agenda / month") || !strings.Contains(helpOut, "Align is a list") {
+		t.Fatalf("align help:\n%s", helpOut)
+	}
+
+	do := appModel{
+		mode:      modeDo,
+		view:      viewAgenda,
+		width:     90,
+		height:    36,
+		records:   records,
+		monthDate: sampleDate(2026, time.June, 13),
+	}
+	next, cmd = do.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	got, ok = next.(appModel)
+	if cmd != nil || !ok || got.view != viewMonth || !strings.Contains(stripANSI(got.View()), "June, 2026") {
+		t.Fatalf("do month missing view=%s\n%s", got.view, got.View())
+	}
 }

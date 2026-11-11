@@ -460,7 +460,7 @@ func (m model) renderHelp() string {
 		"  ,rn renames the selected session, dd deletes it",
 		"",
 		"Type mode:",
-		"  type over the visible line exactly, including ?, enter accepts it, ctrl+r resets, esc returns",
+		"  type over the visible line exactly, including ?, enter accepts it, ctrl+n skips a line, ctrl+p clears this line and the previous line, esc returns",
 		"",
 		"Press ? to return.",
 	}

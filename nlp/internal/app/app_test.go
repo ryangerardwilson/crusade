@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 	"github.com/ryangerardwilson/crusade/nlp/internal/course"
 )
 
@@ -106,6 +108,109 @@ func TestTypeModeAllowsTypingNBeforeCompletion(t *testing.T) {
 	}
 	if !m.cursorShown {
 		t.Fatalf("typing should make the block cursor visible immediately")
+	}
+}
+
+func TestCtrlRDoesNotRestartTyping(t *testing.T) {
+	m := testModelWithContent("alpha\nbeta")
+	m.startTyping()
+	m.setCurrentTypeInput("alp")
+
+	updated, _ := m.updateTypeKey(tea.KeyMsg{Type: tea.KeyCtrlR})
+	m = updated.(model)
+
+	if m.typeLine != 0 || m.currentTypeInput() != "alp" || m.status == "typing reset" {
+		t.Fatalf("ctrl+r restarted the lesson: line %d input %q status %q", m.typeLine, m.currentTypeInput(), m.status)
+	}
+}
+
+func TestCtrlNSkipsTheLineAsDone(t *testing.T) {
+	m := testModelWithContent("alpha\nbeta")
+	m.width = 40
+	m.height = 12
+	m.startTyping()
+	m.setCurrentTypeInput("al")
+
+	updated, _ := m.updateTypeKey(tea.KeyMsg{Type: tea.KeyCtrlN})
+	m = updated.(model)
+
+	if m.typeLine != 1 || m.typeInputs[0] != "alpha" || m.typeDone {
+		t.Fatalf("skip line %d inputs %#v done %v", m.typeLine, m.typeInputs, m.typeDone)
+	}
+	previous := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	t.Cleanup(func() { lipgloss.SetColorProfile(previous) })
+	var want strings.Builder
+	for _, r := range "alpha" {
+		want.WriteString(statusStyle.Render(string(r)))
+	}
+	if got := m.renderTypeLine(0); got != want.String() || !strings.Contains(got, "38;5;80") {
+		t.Fatalf("skipped line %q", got)
+	}
+}
+
+func TestCtrlNCompletesTheLastLine(t *testing.T) {
+	m := testModelWithContent("alpha\nbeta")
+	m.startTyping()
+	updated, _ := m.updateTypeKey(tea.KeyMsg{Type: tea.KeyCtrlN})
+	m = updated.(model)
+	updated, _ = m.updateTypeKey(tea.KeyMsg{Type: tea.KeyCtrlN})
+	m = updated.(model)
+
+	if !m.typeDone || m.typeLine != 1 || m.typeInputs[1] != "beta" {
+		t.Fatalf("last line line %d inputs %#v done %v", m.typeLine, m.typeInputs, m.typeDone)
+	}
+}
+
+func TestCtrlPReturnsToThePreviousLine(t *testing.T) {
+	m := testModelWithContent("alpha\nbeta\ngamma")
+	m.startTyping()
+	updated, _ := m.updateTypeKey(tea.KeyMsg{Type: tea.KeyCtrlN})
+	m = updated.(model)
+	updated, _ = m.updateTypeKey(tea.KeyMsg{Type: tea.KeyCtrlN})
+	m = updated.(model)
+
+	updated, _ = m.updateTypeKey(tea.KeyMsg{Type: tea.KeyCtrlP})
+	m = updated.(model)
+
+	if m.typeLine != 1 || m.typeInputs[0] != "alpha" || m.typeInputs[1] != "" || m.typeInputs[2] != "" || m.typeDone {
+		t.Fatalf("back line %d inputs %#v done %v", m.typeLine, m.typeInputs, m.typeDone)
+	}
+	if m.currentTypeInput() != "" {
+		t.Fatalf("current input %q", m.currentTypeInput())
+	}
+	if stripANSI(m.renderTypeLine(1)) != "\u258ceta" && stripANSI(m.renderTypeLine(1)) != "\u2588eta" {
+		t.Fatalf("cursor %q", stripANSI(m.renderTypeLine(1)))
+	}
+}
+
+func TestCtrlPReopensAFinishedLesson(t *testing.T) {
+	m := testModelWithContent("alpha")
+	m.startTyping()
+	updated, _ := m.updateTypeKey(tea.KeyMsg{Type: tea.KeyCtrlN})
+	m = updated.(model)
+	if !m.typeDone {
+		t.Fatal("lesson did not complete")
+	}
+
+	updated, _ = m.updateTypeKey(tea.KeyMsg{Type: tea.KeyCtrlP})
+	m = updated.(model)
+
+	if m.typeDone || m.typeLine != 0 || m.typeInputs[0] != "" || m.currentTypeInput() != "" {
+		t.Fatalf("reopen line %d inputs %#v done %v input %q", m.typeLine, m.typeInputs, m.typeDone, m.currentTypeInput())
+	}
+}
+
+func TestCtrlPOnTheFirstLineStays(t *testing.T) {
+	m := testModelWithContent("alpha\nbeta")
+	m.startTyping()
+	m.setCurrentTypeInput("al")
+
+	updated, _ := m.updateTypeKey(tea.KeyMsg{Type: tea.KeyCtrlP})
+	m = updated.(model)
+
+	if m.typeLine != 0 || m.currentTypeInput() != "" {
+		t.Fatalf("first line line %d input %q", m.typeLine, m.currentTypeInput())
 	}
 }
 

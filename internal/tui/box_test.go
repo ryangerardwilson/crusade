@@ -13,14 +13,6 @@ import (
 	"github.com/ryangerardwilson/crusade/internal/store"
 )
 
-type bannerInner struct{}
-
-func (bannerInner) Init() tea.Cmd { return nil }
-
-func (b bannerInner) Update(tea.Msg) (tea.Model, tea.Cmd) { return b, nil }
-
-func (bannerInner) View() string { return "sessions" }
-
 func TestBoxToggleSavesAndDayMoveDoesNotCreateRows(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("SQLX_ROOT", root)
@@ -42,7 +34,8 @@ func TestBoxToggleSavesAndDayMoveDoesNotCreateRows(t *testing.T) {
 	m.selected = 2
 	m.toggleSelected()
 	checked, err := store.LoadDayChecks(db, "2026-10-20")
-	if err != nil || !checked["work/email"] {
+	if anyOf(err != nil, !checked["work/email"]) {
+
 		t.Fatalf("checks = %#v err=%v", checked, err)
 	}
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
@@ -51,7 +44,8 @@ func TestBoxToggleSavesAndDayMoveDoesNotCreateRows(t *testing.T) {
 		t.Fatalf("day = %s", got.day)
 	}
 	empty, err := store.LoadDayChecks(db, "2026-10-21")
-	if err != nil || len(empty) != 0 {
+	if anyOf(err != nil, len(empty) != 0) {
+
 		t.Fatalf("next day checks = %#v err=%v", empty, err)
 	}
 }
@@ -60,7 +54,8 @@ func TestModeKeyDoesNotToggle(t *testing.T) {
 	m := newAppModel(filepath.Join(t.TempDir(), "tasks.sqlite"), nil)
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
 	got := next.(appModel)
-	if got.mode != modeDo || cmd != nil {
+	if anyOf(got.mode != modeDo, cmd != nil) {
+
 		t.Fatalf("mode=%q cmd=%v", got.mode, cmd != nil)
 	}
 }
@@ -68,18 +63,43 @@ func TestModeKeyDoesNotToggle(t *testing.T) {
 func TestBoxShortcutsStayHiddenUntilHelp(t *testing.T) {
 	m := newBoxModel("", box.Outline{}, nil, "2026-10-20")
 	out := m.View()
-	if strings.Contains(out, "space check") || strings.Contains(out, "? help") {
+	if anyOf(strings.Contains(out, "space check"), strings.Contains(out, "? help")) {
+
 		t.Fatalf("shortcuts visible before help:\n%s", out)
 	}
-	if !strings.Contains(out, "momentum") || !strings.Contains(out, "day streak") {
+	if anyOf(!strings.Contains(out, "momentum"), !strings.Contains(out, "day streak")) {
+
 		t.Fatalf("momentum graph missing:\n%s", out)
 	}
-	m.showHelp = true
-	out = m.View()
-	for _, want := range []string{"space check", "e edit", "? help"} {
+	m.width = 90
+	m.height = 36
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	got, ok := next.(boxModel)
+	if anyOf(cmd != nil, !ok, !got.showHelp) {
+
+		t.Fatalf("open cmd=%v ok=%v", cmd != nil, ok)
+	}
+	out = stripANSI(got.View())
+	for _, want := range []string{"QUICK GUIDE", "Check", "Edit text", "Close this guide", "╭"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("help missing %q:\n%s", want, out)
 		}
+	}
+	if anyOf(!strings.HasPrefix(strings.Split(out, "\n")[0], "crusade"), !strings.Contains(out, "October 20, 2026 (Tuesday)")) {
+
+		t.Fatalf("modal replaced the boxes:\n%s", out)
+	}
+	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	got, ok = next.(boxModel)
+	if anyOf(cmd != nil, !ok, !got.showHelp) {
+
+		t.Fatalf("j closed help=%v", ok && got.showHelp)
+	}
+	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	got, ok = next.(boxModel)
+	if anyOf(cmd != nil, !ok, got.showHelp, strings.Contains(got.View(), "QUICK GUIDE")) {
+
+		t.Fatalf("close help=%v\n%s", ok && got.showHelp, got.View())
 	}
 }
 
@@ -96,12 +116,12 @@ func TestModeBadgesShareTheBlueCorner(t *testing.T) {
 		{"DO", strings.Split(do.View(), "\n")[0]},
 		{"ALIGN", strings.Split(align.View(), "\n")[0]},
 		{"BOX", strings.Split(box.View(), "\n")[0]},
-		{"NLP", strings.Split(nlpMode{width: 48, inner: bannerInner{}}.View(), "\n")[0]},
 	}
 	color := ""
 	for _, view := range views {
 		plain := stripANSI(view.line)
-		if !strings.HasPrefix(plain, "crusade") || !strings.HasSuffix(strings.TrimRight(plain, " "), view.label) {
+		if anyOf(!strings.HasPrefix(plain, "crusade"), !strings.HasSuffix(strings.TrimRight(plain, " "), view.label)) {
+
 			t.Fatalf("%s banner = %q", view.label, plain)
 		}
 		got := badgeEscape(view.line, view.label)
@@ -119,7 +139,7 @@ func TestModeBadgesShareTheBlueCorner(t *testing.T) {
 	if strings.Contains(color, "220") {
 		t.Fatalf("mode badge still uses amber: %q", color)
 	}
-	if !strings.Contains(box.View(), "2026-10-20  0/0") {
+	if !strings.Contains(box.View(), "October 20, 2026 (Tuesday)  0/0") {
 		t.Fatalf("box summary missing day count:\n%s", box.View())
 	}
 }
@@ -181,7 +201,8 @@ func TestBoxMomentumGraph(t *testing.T) {
 			t.Fatalf("graph missing %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "▣") || strings.Contains(out, "░") || strings.Contains(out, "▓") || strings.Contains(out, "█") {
+	if anyOf(strings.Contains(out, "▣"), strings.Contains(out, "░"), strings.Contains(out, "▓"), strings.Contains(out, "█")) {
+
 		t.Fatalf("graph glyph drifted:\n%s", out)
 	}
 }
@@ -199,22 +220,28 @@ func TestContributionCalendar(t *testing.T) {
 		"2026-10-15": 4,
 	}
 	grid := contributionGrid(counts, today, 6)
-	if len(grid) != 6 || len(grid[0]) != 7 {
+	if anyOf(len(grid) != 6, len(grid[0]) != 7) {
+
 		t.Fatalf("shape %d x %d", len(grid), len(grid[0]))
 	}
-	if got := grid[0][0].day.Format(time.DateOnly); got != "2026-09-13" || grid[0][0].level != 2 {
+	if got := grid[0][0].day.Format(time.DateOnly); anyOf(got != "2026-09-13", grid[0][0].level != 2) {
+
 		t.Fatalf("start = %+v", grid[0][0])
 	}
-	if grid[5][0].day.Format(time.DateOnly) != "2026-10-18" || grid[5][0].level != 2 {
+	if anyOf(grid[5][0].day.Format(time.DateOnly) != "2026-10-18", grid[5][0].level != 2) {
+
 		t.Fatalf("sunday = %+v", grid[5][0])
 	}
-	if grid[5][3].level != 1 || grid[5][3].day.Format(time.DateOnly) != "2026-10-21" {
+	if anyOf(grid[5][3].level != 1, grid[5][3].day.Format(time.DateOnly) != "2026-10-21") {
+
 		t.Fatalf("wednesday = %+v", grid[5][3])
 	}
-	if grid[5][4].level != 4 || grid[5][4].future || grid[5][4].day.Weekday() != time.Thursday {
+	if anyOf(grid[5][4].level != 4, grid[5][4].future, grid[5][4].day.Weekday() != time.Thursday) {
+
 		t.Fatalf("today cell = %+v", grid[5][4])
 	}
-	if !grid[5][5].future || grid[5][5].day.Format(time.DateOnly) != "2026-10-23" {
+	if anyOf(!grid[5][5].future, grid[5][5].day.Format(time.DateOnly) != "2026-10-23") {
+
 		t.Fatalf("friday = %+v", grid[5][5])
 	}
 	if got := contributionMonthHeader(grid); got != "Sep Oct"+strings.Repeat(" ", 5) {
@@ -265,7 +292,8 @@ func TestContributionCalendar(t *testing.T) {
 	viewed := contributionCell{day: time.Date(2026, 10, 20, 0, 0, 0, 0, time.Local), level: 2}
 	focused := renderContributionCell(viewed, "2026-10-20")
 	plain := renderContributionCell(viewed, "2026-10-21")
-	if focused != plain || lipgloss.Width(focused) != contributionCellWidth {
+	if anyOf(focused != plain, lipgloss.Width(focused) != contributionCellWidth) {
+
 		t.Fatalf("viewed day drifted: %q width %d", stripANSI(focused), lipgloss.Width(focused))
 	}
 	if !strings.Contains(out, "momentum  2 day streak") {
@@ -274,7 +302,8 @@ func TestContributionCalendar(t *testing.T) {
 	if !strings.Contains(out, "5 boxes on Thursday, Oct 22, 2026") {
 		t.Fatalf("tooltip missing:\n%s", out)
 	}
-	if !strings.Contains(out, "Less") || !strings.Contains(out, "More") {
+	if anyOf(!strings.Contains(out, "Less"), !strings.Contains(out, "More")) {
+
 		t.Fatalf("legend missing:\n%s", out)
 	}
 }
@@ -301,7 +330,113 @@ func TestSaveUpdatesTheStreakDay(t *testing.T) {
 		t.Fatal("empty day kept a count")
 	}
 	days, err := store.LoadActiveDays(path)
-	if err != nil || days[day] {
+	if anyOf(err != nil, days[day]) {
+
 		t.Fatalf("stored days = %#v err=%v", days, err)
 	}
+}
+
+func TestBoxKeysCreateEditAndDeleteInPlace(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("SQLX_ROOT", root)
+	t.Setenv("BOXES_CONFIG", filepath.Join(t.TempDir(), "missing-outline.txt"))
+	db := store.DatabasePath()
+	if _, err := store.Open(db); err != nil {
+		t.Fatal(err)
+	}
+	m := newBoxModel(db, box.Outline{}, nil, "2026-10-30")
+	m.width = 80
+	m.height = 24
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	got := next.(boxModel)
+	if anyOf(cmd != nil, !got.composing) {
+
+		t.Fatalf("new box cmd=%v composing=%v", cmd != nil, got.composing)
+	}
+	for _, r := range "Pray" {
+		next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		got = next.(boxModel)
+		if cmd != nil {
+			t.Fatal(cmd)
+		}
+	}
+	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	got = next.(boxModel)
+	if anyOf(cmd != nil, !got.composing, got.composeText != "Prayq") {
+
+		t.Fatalf("q while typing text=%q cmd=%v composing=%v", got.composeText, cmd != nil, got.composing)
+	}
+	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got = next.(boxModel)
+	if anyOf(cmd != nil, got.composing, !strings.Contains(got.View(), "Prayq")) {
+
+		t.Fatalf("created cmd=%v composing=%v\n%s", cmd != nil, got.composing, got.View())
+	}
+
+	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	got = next.(boxModel)
+	if anyOf(cmd != nil, !got.composing, got.composeText != "Prayq") {
+
+		t.Fatalf("edit cmd=%v text=%q", cmd != nil, got.composeText)
+	}
+	for range len("Prayq") {
+		next, _ = got.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		got = next.(boxModel)
+	}
+	for _, r := range "Amen" {
+		next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		got = next.(boxModel)
+	}
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got = next.(boxModel)
+	if anyOf(strings.Contains(got.View(), "Prayq"), !strings.Contains(got.View(), "Amen")) {
+
+		t.Fatalf("edited view:\n%s", got.View())
+	}
+	loaded, err := store.LoadOutline(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, ok := loaded.ItemByID("prayq")
+	if anyOf(!ok, item.Label != "Amen") {
+
+		t.Fatalf("stored = %#v ok=%v", item, ok)
+	}
+
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	got = next.(boxModel)
+	if anyOf(!strings.Contains(got.View(), "Amen"), got.status != "Press d again to delete the selected box.") {
+
+		t.Fatalf("first d status=%q\n%s", got.status, got.View())
+	}
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	got = next.(boxModel)
+	if anyOf(strings.Contains(got.View(), "[ ] Amen"), strings.Contains(got.View(), "[x] Amen"), !strings.Contains(got.View(), "No boxes yet. Press n to add one."), got.status != "Deleted Amen.") {
+
+		t.Fatalf("deleted status=%q\n%s", got.status, got.View())
+	}
+	loaded, err = store.LoadOutline(db)
+	if anyOf(err != nil, len(loaded.Flatten()) != 0) {
+
+		t.Fatalf("left = %#v err=%v", loaded.Flatten(), err)
+	}
+}
+
+func anyOf(flags ...bool) bool {
+	for _, flag := range flags {
+		if flag {
+			return true
+		}
+	}
+	return false
+}
+
+func allOf(flags ...bool) bool {
+	for _, flag := range flags {
+		if !flag {
+			return false
+		}
+	}
+	return true
 }

@@ -27,7 +27,7 @@ func TestNoArgsMatchesHelp(t *testing.T) {
 	if noArgs.String() != help.String() {
 		t.Fatalf("no args output differed from help")
 	}
-	if !strings.Contains(help.String(), "open a mode:") || !strings.Contains(help.String(), "crusade -m box") || !strings.Contains(help.String(), "crusade -m nlp") || !strings.Contains(help.String(), "crusade -m align -r limit 10") || !strings.Contains(help.String(), "crusade -m do -c") || !strings.Contains(help.String(), "resume the last mode") {
+	if !strings.Contains(help.String(), "open a mode:") || !strings.Contains(help.String(), "crusade -m box") || !strings.Contains(help.String(), "crusade -m align -r limit 10") || !strings.Contains(help.String(), "crusade -m do -c") || !strings.Contains(help.String(), "resume the last mode") {
 		t.Fatalf("help output missing expected contract text:\n%s", help.String())
 	}
 	if strings.Contains(help.String(), "\x1b") {
@@ -74,12 +74,9 @@ func TestAddListEditDeleteFlow(t *testing.T) {
 
 	addArgs := []string{
 		"-m", "align", "-c",
-		"x", "2026-01-26 00:00",
+		"x", "2026-01-26",
 		"y", "ship the patch",
 		"z", "reduce drift",
-		"p", "7",
-		"q", "8",
-		"r", "6",
 	}
 	if code := Run(addArgs, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
 		t.Fatalf("add code = %d", code)
@@ -88,18 +85,22 @@ func TestAddListEditDeleteFlow(t *testing.T) {
 	if code := Run([]string{"-m", "align", "-r", "limit", "5"}, &list, &bytes.Buffer{}); code != 0 {
 		t.Fatalf("list code = %d output=%q", code, list.String())
 	}
-	if !strings.Contains(list.String(), "id: 1") || !strings.Contains(list.String(), "ship the patch") {
+	if !strings.Contains(list.String(), "id: 1") || !strings.Contains(list.String(), "ship the patch") || !strings.Contains(list.String(), "x: 2026-01-26") || strings.Contains(list.String(), "00:00") || strings.Contains(list.String(), "p:") {
 		t.Fatalf("list output missing item:\n%s", list.String())
 	}
-	if code := Run([]string{"-m", "align", "-u", "1", "y", "updated outcome", "p", "8.5"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+	if code := Run([]string{"-m", "align", "-u", "1", "y", "updated outcome"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
 		t.Fatalf("edit code = %d", code)
 	}
 	var edited bytes.Buffer
 	if code := Run([]string{"-m", "align", "-r"}, &edited, &bytes.Buffer{}); code != 0 {
 		t.Fatalf("edited list code = %d", code)
 	}
-	if !strings.Contains(edited.String(), "updated outcome") || !strings.Contains(edited.String(), "p: 8.5") {
+	if !strings.Contains(edited.String(), "updated outcome") || strings.Contains(edited.String(), "p:") {
 		t.Fatalf("edited output missing update:\n%s", edited.String())
+	}
+	var rejected bytes.Buffer
+	if code := Run([]string{"-m", "align", "-u", "1", "p", "8"}, &rejected, &bytes.Buffer{}); code == 0 || !strings.Contains(rejected.String(), "Unknown field 'p'") {
+		t.Fatalf("score edit code=%d output=%q", code, rejected.String())
 	}
 	if code := Run([]string{"-m", "align", "-d", "1"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
 		t.Fatalf("delete code = %d", code)
@@ -110,6 +111,39 @@ func TestAddListEditDeleteFlow(t *testing.T) {
 	}
 	if !strings.Contains(empty.String(), "No upcoming items.") {
 		t.Fatalf("empty list output = %s", empty.String())
+	}
+}
+
+func TestAlignEditorUsesYAML(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("SQLX_ROOT", filepath.Join(home, "sqlx"))
+	t.Setenv("BOXES_CONFIG", filepath.Join(home, "missing.txt"))
+	t.Setenv("VISUAL", "")
+	nowFunc = func() time.Time { return time.Date(2026, 1, 26, 15, 4, 5, 0, time.Local) }
+	defer func() { nowFunc = time.Now }()
+	script := filepath.Join(home, "edit-align")
+	copyPath := filepath.Join(home, "opened.yaml")
+	body := "#!/bin/sh\ncp \"$1\" \"" + copyPath + "\"\ncat > \"$1\" <<'EOF'\nx: 2026-04-02\ny: wrote the note\nz: keep the trail\nEOF\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EDITOR", script)
+	if code := Run([]string{"-m", "align", "-c"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("create code = %d", code)
+	}
+	opened, err := os.ReadFile(copyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(opened)
+	if !strings.Contains(text, "x: 2026-01-26") || strings.Contains(text, "nsm") || strings.Contains(text, "{") || strings.Contains(text, `"`) || strings.Contains(text, "'") {
+		t.Fatalf("opened yaml:\n%s", text)
+	}
+	records, err := store.Load(store.DatabasePath())
+	if err != nil || len(records) != 1 || records[0].Event.Y != "wrote the note" || records[0].Event.X.Format("2006-01-02") != "2026-04-02" {
+		t.Fatalf("saved %#v err=%v", records, err)
 	}
 }
 
@@ -142,7 +176,7 @@ func TestListAndEditStayOnThinkRecords(t *testing.T) {
 	nowFunc = func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.Local) }
 	defer func() { nowFunc = time.Now }()
 
-	think, err := model.NewEvent("2026-02-01 00:00:00", "ship the patch", "reduce drift", "7", "8", "6")
+	think, err := model.NewEvent("2026-02-01 00:00:00", "ship the patch", "reduce drift")
 	if err != nil {
 		t.Fatal(err)
 	}

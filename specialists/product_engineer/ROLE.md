@@ -6,14 +6,14 @@ Own crusade-specific facts that should not live in root generalists.
 
 ## Load Guidance
 
-Load this file for crusade implementation, CLI/TUI, installer, release, storage,
+Load this file for `crusade` implementation, CLI/TUI, installer, release, storage,
 configuration, or project-specific product work.
 
 ## Owns
 
 - CLI/TUI contract, command grammar, config, storage, and installer constraints.
 - Release, upgrade, and verification expectations specific to this app.
-- Repo-local product facts around the JTBD `x/y/z` plus `p/q/r` scoring model.
+- Repo-local product facts around the JTBD `x/y/z` statement. Align x is a day.
 
 ## Project Context
 
@@ -26,10 +26,10 @@ Current structure:
 - `cmd/crusade/main.go`: binary entrypoint.
 - `internal/cli/`: help/version/upgrade/config and deterministic command grammar.
 - `internal/config/`: XDG config.
-- `internal/model/`: datetime, metric, and JSON validation.
+- `internal/model/`: datetime validation and the align YAML record.
 - `internal/box/`: checklist outline, parent completion, and check toggles.
 - `internal/store/`: the sqlx database `crusade`, plus a one-time boxes import.
-- `internal/tui/`: Bubble Tea do, align, box, and nlp surfaces.
+- `internal/tui/`: Bubble Tea do, align, box, cal, and nlp surfaces.
 - `nlp/`: the practice-session mode. Sessions stay in the sqlx database `nlp`.
 - `internal/version/`: release-time version variable.
 - `install.sh`: release/local-source installer.
@@ -41,7 +41,7 @@ Current structure:
 go test ./...
 go run ./cmd/crusade help
 go run ./cmd/crusade open
-go run ./cmd/crusade -m align -c x "2026-01-26 00:00" y "ship the patch" z "reduce drift" p 7 q 8 r 6
+go run ./cmd/crusade -m align -c x 2026-01-26 y "ship the patch" z "reduce drift"
 go run ./cmd/crusade -m align -r limit 5
 go run ./cmd/crusade -m do -c "mail the letter"
 ./install.sh from .
@@ -64,18 +64,47 @@ model task
   x text not null
   y text not null
   z text
-  p real
-  q real
-  r real
   done integer not null
+  done_at text
+
+model deletion
+  id integer primary key
+  deleted_at text not null
 ```
 
-`-r` prints each stable `id`. `-u <id>` and `-d <id>` target that id and stay on the selected mode. In align mode, TUI `n` and `e` suspend Bubble Tea, open Vim on that one record, and save the row after validation. In do mode, `e` edits the task text and `r` reschedules the selected task. The do agenda and the do month show how many do tasks are marked done in the current week. That week starts on Monday and ends on Sunday. `crusade -m box -c` and `crusade -m box -u` open Vim on the whole outline as YAML and save every box. In box mode, TUI `e` does the same. Do and align lists are checkbox rows drawn from the top. Space marks the selected task done and leaves it in the list. `dd` still deletes it. Box shortcuts appear only while `?` is open. Do, align, box, and nlp use the same blue badge in the top right. `q` quits the TUI. While a do task is being typed, `q` is a letter. Tab cycles do, align, box, and nlp, and returns each mode to the screen you left. Tab stays put while a do task is being typed and while an nlp session is being named or typed. crusade open resumes the last mode, or do when none is saved. The `nlp` command opens the practice list. Practice sessions stay in the sqlx database `nlp`. Below the box list, a momentum graph draws checked days as a contribution calendar: weeks are columns, weekdays are rows, bluer squares mean more boxes checked, and the caption is the current streak.
+Time blocks live in the same database:
+
+```text
+model block
+  id integer primary key
+  title text not null
+  start_at text not null
+  end_at text not null
+
+model repeat
+  id integer primary key
+  title text not null
+  start_at text not null
+  end_at text not null
+  freq text not null
+  until_on text
+
+model repeat_change
+  id integer primary key
+  repeat_id integer not null
+  day text not null
+  skipped integer not null
+  title text
+  start_at text
+  end_at text
+```
+
+`-r` prints each stable `id`. `-u <id>` and `-d <id>` target that id and stay on the selected mode. In align mode, TUI `n` and `e` suspend Bubble Tea, open Vim on that one record as YAML, and save the row after validation. x is a day, stored as YYYY-MM-DD. In do mode, `e` edits the task text and `r` reschedules the selected task. The do agenda and the do month show how many do tasks were marked done during the current week and how many do tasks were deleted during that same week. The line reads N items done and M deleted this week. That week starts on Monday and ends on Sunday. The done count uses the moment the task is marked done, not the day the task is scheduled for. The deleted count uses the moment the task is deleted. Deleting a task that was marked done this week counts it as deleted and no longer as done. `crusade -m box -c` and `crusade -m box -u` open Vim on the whole outline as YAML and save every box. In box mode, n adds a box after the selected one, e edits its text, and dd deletes it and any box under it. While a box is being typed, q is a letter. Do and align lists are checkbox rows drawn from the top. Space marks the selected task done and leaves it in the list. `dd` still deletes it. `?` toggles a shortcuts modal over the current screen. Do, align, box, cal, and nlp use the same blue badge in the top right. `q` quits the TUI. While a do task is being typed, `q` is a letter. Tab cycles do, align, box, cal, and nlp, and returns each mode to the screen you left. Align mode is a list. Cal mode blocks time with a title, a start, an end on one day, and an optional meeting url. Do tasks do not block time. The week is an hour sheet sized to the screen. A cell shows part of a block, and the focus box shows the whole block under the cursor. o opens its meeting link in the browser. From the Super+C window, that also closes crusade. j and k move one hour at a time. A block starts and ends on the hour. v selects a span. n and e open a form for the title, the start, the end, an optional meeting url, and the repeat. days repeats on chosen weekdays. On a repeating block, that form applies to this event, this and following, or all events. d removes or deletes a repeating block. o is this event, f is this and following, and a is all events. A one-off block uses the same form to edit and dd to delete. While a block is being typed, q is a letter. crusade open resumes the last mode, or do when none is saved. Below the box list, a momentum graph draws checked days as a contribution calendar: weeks are columns, weekdays are rows, bluer squares mean more boxes checked, and the caption is the current streak.
 
 ## Release Constraints
 
 - Keep `internal/version.Version` at `0.0.0` in source.
 - Inject the release version with Go ldflags.
-- Release asset name: `xyz-linux-x64.tar.gz`.
-- Installer must accept both old `# Managed by xyz local-bin launcher` and new
-  `# Managed by xyz installer local-bin launcher` markers.
+- Release asset name: `crusade-linux-x64.tar.gz`.
+- Installer must accept both old `# Managed by crusade local-bin launcher` and new
+  `# Managed by crusade installer local-bin launcher` markers.

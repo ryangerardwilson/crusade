@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ryangerardwilson/crusade/internal/model"
 )
@@ -25,10 +26,8 @@ const taskModel = "model task\n" +
 	"  x text not null\n" +
 	"  y text not null\n" +
 	"  z text\n" +
-	"  p real\n" +
-	"  q real\n" +
-	"  r real\n" +
-	"  done integer not null\n"
+	"  done integer not null\n" +
+	"  done_at text\n"
 
 const createORM = `CREATE TABLE IF NOT EXISTS sqlx_orm (
   model TEXT PRIMARY KEY,
@@ -42,10 +41,17 @@ const createTask = `CREATE TABLE IF NOT EXISTS task (
   "x" TEXT NOT NULL,
   "y" TEXT NOT NULL,
   "z" TEXT,
-  "p" REAL,
-  "q" REAL,
-  "r" REAL,
-  "done" INTEGER NOT NULL
+  "done" INTEGER NOT NULL,
+  "done_at" TEXT
+)`
+
+const deletionModel = "model deletion\n" +
+	"  id integer primary key\n" +
+	"  deleted_at text not null\n"
+
+const createDeletion = `CREATE TABLE IF NOT EXISTS deletion (
+  "id" INTEGER PRIMARY KEY,
+  "deleted_at" TEXT NOT NULL
 )`
 
 type Record struct {
@@ -54,15 +60,13 @@ type Record struct {
 }
 
 type taskRow struct {
-	ID   int      `json:"id"`
-	Mode string   `json:"mode"`
-	X    string   `json:"x"`
-	Y    string   `json:"y"`
-	Z    *string  `json:"z"`
-	P    *float64 `json:"p"`
-	Q    *float64 `json:"q"`
-	R    *float64 `json:"r"`
-	Done int      `json:"done"`
+	ID     int     `json:"id"`
+	Mode   string  `json:"mode"`
+	X      string  `json:"x"`
+	Y      string  `json:"y"`
+	Z      *string `json:"z"`
+	Done   int     `json:"done"`
+	DoneAt *string `json:"done_at"`
 }
 
 func DatabasePath() string {
@@ -109,7 +113,7 @@ func Load(dbPath string) ([]Record, error) {
 		return nil, err
 	}
 	var rows []taskRow
-	if err := queryJSON(dbPath, "SELECT id, mode, x, y, z, p, q, r, done FROM task", &rows); err != nil {
+	if err := queryJSON(dbPath, "SELECT id, mode, x, y, z, done, done_at FROM task", &rows); err != nil {
 		return nil, fmt.Errorf("failed to read tasks from %s: %w", dbPath, err)
 	}
 	records := make([]Record, 0, len(rows))
@@ -143,7 +147,7 @@ func Save(dbPath string, records []Record) error {
 	var b strings.Builder
 	b.WriteString("BEGIN IMMEDIATE;\nDELETE FROM task;\n")
 	if len(normalized) > 0 {
-		b.WriteString("INSERT INTO task(id, mode, x, y, z, p, q, r, done) VALUES\n")
+		b.WriteString("INSERT INTO task(id, mode, x, y, z, done, done_at) VALUES\n")
 		for index, record := range normalized {
 			if index > 0 {
 				b.WriteString(",\n")
@@ -173,7 +177,7 @@ func AddRecord(dbPath string, event model.Event) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := execSQL(dbPath, "INSERT INTO task(id, mode, x, y, z, p, q, r, done) VALUES "+rowSQL(record)+";\n"); err != nil {
+	if err := execSQL(dbPath, "INSERT INTO task(id, mode, x, y, z, done, done_at) VALUES "+rowSQL(record)+";\n"); err != nil {
 		return 0, err
 	}
 	return id, nil
@@ -201,7 +205,20 @@ func Delete(dbPath string, id int) error {
 	if err := ensure(dbPath); err != nil {
 		return err
 	}
-	changed, err := rowsChanged(dbPath, "DELETE FROM task WHERE id = "+strconv.Itoa(id)+";\n")
+	record, found, err := taskByID(dbPath, id)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("ID %d not found", id)
+	}
+	var b strings.Builder
+	b.WriteString("BEGIN IMMEDIATE;\n")
+	if record.Event.IsDo() {
+		fmt.Fprintf(&b, "INSERT INTO deletion(id, deleted_at) SELECT COALESCE((SELECT MAX(id) FROM deletion), 0) + 1, %s WHERE EXISTS (SELECT 1 FROM task WHERE id = %d);\n", sqlString(time.Now().Format(model.DateTimeFormat)), id)
+	}
+	fmt.Fprintf(&b, "DELETE FROM task WHERE id = %d;\nCOMMIT;\n", id)
+	changed, err := rowsChanged(dbPath, b.String())
 	if err != nil {
 		return err
 	}
@@ -211,15 +228,103 @@ func Delete(dbPath string, id int) error {
 	return nil
 }
 
+func taskByID(dbPath string, id int) (Record, bool, error) {
+	var rows []taskRow
+	query := "SELECT id, mode, x, y, z, done, done_at FROM task WHERE id = " + strconv.Itoa(id)
+	if err := queryJSON(dbPath, query, &rows); err != nil {
+		return Record{}, false, err
+	}
+	if len(rows) == 0 {
+		return Record{}, false, nil
+	}
+	event, err := eventFromRow(rows[0])
+	if err != nil {
+		return Record{}, false, err
+	}
+	return Record{ID: rows[0].ID, Event: event}, true, nil
+}
+
+// DeletedThisWeek counts do tasks deleted during the Monday-Sunday week that contains now.
+func DeletedThisWeek(dbPath string, now time.Time) (int, error) {
+	if strings.TrimSpace(dbPath) == "" {
+		return 0, nil
+	}
+	info, err := os.Stat(dbPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if info.IsDir() {
+		return 0, nil
+	}
+	if err := ensure(dbPath); err != nil {
+		return 0, err
+	}
+	var rows []struct {
+		DeletedAt string `json:"deleted_at"`
+	}
+	if err := queryJSON(dbPath, "SELECT deleted_at FROM deletion", &rows); err != nil {
+		return 0, err
+	}
+	stamps := make([]time.Time, 0, len(rows))
+	for _, row := range rows {
+		stamp, err := model.ParseDateTime(row.DeletedAt)
+		if err != nil {
+			continue
+		}
+		stamps = append(stamps, stamp)
+	}
+	return deletionsDuringWeek(stamps, now), nil
+}
+
+func deletionsDuringWeek(stamps []time.Time, now time.Time) int {
+	start := weekStart(now)
+	end := start.AddDate(0, 0, 7)
+	count := 0
+	for _, stamp := range stamps {
+		if stamp.IsZero() {
+			continue
+		}
+		day := time.Date(stamp.Year(), stamp.Month(), stamp.Day(), 0, 0, 0, 0, stamp.Location())
+		if !day.Before(start) && day.Before(end) {
+			count++
+		}
+	}
+	return count
+}
+
+func weekStart(now time.Time) time.Time {
+	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	offset := (int(day.Weekday()) + 6) % 7
+	return day.AddDate(0, 0, -offset)
+}
+
 func ensure(dbPath string) error {
 	if err := prepareDirs(dbPath); err != nil {
 		return err
 	}
-	sql := "PRAGMA journal_mode=WAL;\n" + createORM + ";\n" + createTask + ";\n" + createBox + ";\n" + createBoxCheck + ";\n" + createMeta + ";\n" + ormUpsertSQL()
+	sql := "PRAGMA journal_mode=WAL;\n" + createORM + ";\n" + createTask + ";\n" + createBox + ";\n" + createBoxCheck + ";\n" + createMeta + ";\n" + createBlock + ";\n" + createRepeat + ";\n" + createRepeatChange + ";\n" + createDeletion + ";\n" + ormUpsertSQL()
 	if err := execSQL(dbPath, sql); err != nil {
 		return err
 	}
 	if err := ensureTaskDoneColumn(dbPath); err != nil {
+		return err
+	}
+	if err := ensureTaskDoneAtColumn(dbPath); err != nil {
+		return err
+	}
+	if err := ensureTaskDropsScores(dbPath); err != nil {
+		return err
+	}
+	if err := ensureTextColumn(dbPath, "block", "url"); err != nil {
+		return err
+	}
+	if err := ensureTextColumn(dbPath, "repeat", "url"); err != nil {
+		return err
+	}
+	if err := ensureTextColumn(dbPath, "repeat_change", "url"); err != nil {
 		return err
 	}
 	if err := os.Chmod(dbPath, 0o600); err != nil {
@@ -239,6 +344,83 @@ func ensureTaskDoneColumn(dbPath string) error {
 		return nil
 	}
 	return execSQL(dbPath, "ALTER TABLE task ADD COLUMN done INTEGER NOT NULL DEFAULT 0;")
+}
+
+func ensureTaskDropsScores(dbPath string) error {
+	var rows []struct {
+		Name string `json:"name"`
+	}
+	if err := queryJSON(dbPath, "SELECT name FROM pragma_table_info('task') WHERE name = 'p'", &rows); err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	return execSQL(dbPath, `
+BEGIN IMMEDIATE;
+CREATE TABLE task_scoreless (
+  "id" INTEGER PRIMARY KEY,
+  "mode" TEXT NOT NULL,
+  "x" TEXT NOT NULL,
+  "y" TEXT NOT NULL,
+  "z" TEXT,
+  "done" INTEGER NOT NULL,
+  "done_at" TEXT
+);
+INSERT INTO task_scoreless(id, mode, x, y, z, done, done_at)
+SELECT
+  id,
+  CASE
+    WHEN TRIM(COALESCE(mode, '')) = '' AND z = 'done' AND COALESCE(p, 0) = 0 AND COALESCE(q, 0) = 0 AND COALESCE(r, 0) = 0 THEN 'do'
+    WHEN LOWER(TRIM(mode)) = 'think' THEN 'align'
+    WHEN TRIM(COALESCE(mode, '')) = '' THEN 'align'
+    ELSE mode
+  END,
+  CASE
+    WHEN NOT (TRIM(COALESCE(mode, '')) = '' AND z = 'done' AND COALESCE(p, 0) = 0 AND COALESCE(q, 0) = 0 AND COALESCE(r, 0) = 0)
+      AND LOWER(TRIM(COALESCE(mode, ''))) IN ('', 'align', 'think')
+    THEN substr(x, 1, 10)
+    ELSE x
+  END,
+  y,
+  CASE
+    WHEN TRIM(COALESCE(mode, '')) = '' AND z = 'done' AND COALESCE(p, 0) = 0 AND COALESCE(q, 0) = 0 AND COALESCE(r, 0) = 0 THEN NULL
+    ELSE z
+  END,
+  COALESCE(done, 0),
+  done_at
+FROM task;
+DROP TABLE task;
+ALTER TABLE task_scoreless RENAME TO task;
+COMMIT;
+`)
+}
+
+func ensureTaskDoneAtColumn(dbPath string) error {
+	var rows []struct {
+		Name string `json:"name"`
+	}
+	if err := queryJSON(dbPath, "SELECT name FROM pragma_table_info('task') WHERE name = 'done_at'", &rows); err != nil {
+		return err
+	}
+	if len(rows) > 0 {
+		return nil
+	}
+	return execSQL(dbPath, "ALTER TABLE task ADD COLUMN done_at TEXT;")
+}
+
+func ensureTextColumn(dbPath, table, column string) error {
+	var rows []struct {
+		Name string `json:"name"`
+	}
+	query := fmt.Sprintf("SELECT name FROM pragma_table_info('%s') WHERE name = '%s'", table, column)
+	if err := queryJSON(dbPath, query, &rows); err != nil {
+		return err
+	}
+	if len(rows) > 0 {
+		return nil
+	}
+	return execSQL(dbPath, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s TEXT;", table, column))
 }
 
 func prepareDirs(dbPath string) error {
@@ -331,17 +513,11 @@ func stored(record Record) (Record, error) {
 	event := record.Event
 	var err error
 	done := event.Done
+	doneAt := event.DoneAt
 	if event.IsDo() {
 		event, err = model.NewDoEvent(event.X.Format(model.DateTimeFormat), event.Y)
 	} else if event.Mode == "" || event.Mode == model.ModeAlign {
-		event, err = model.NewEvent(
-			event.X.Format(model.DateTimeFormat),
-			event.Y,
-			event.Z,
-			model.FormatMetric(event.P),
-			model.FormatMetric(event.Q),
-			model.FormatMetric(event.R),
-		)
+		event, err = model.NewEvent(event.X.Format("2006-01-02"), event.Y, event.Z)
 	} else {
 		return Record{}, fmt.Errorf("unknown mode %q", event.Mode)
 	}
@@ -349,6 +525,9 @@ func stored(record Record) (Record, error) {
 		return Record{}, err
 	}
 	event.Done = done
+	if done {
+		event.DoneAt = doneAt
+	}
 	record.Event = event
 	return record, nil
 }
@@ -399,11 +578,11 @@ func eventFromRow(row taskRow) (model.Event, error) {
 		if row.Z != nil {
 			z = *row.Z
 		}
-		if strings.TrimSpace(row.Mode) == "" && z == "done" && metricIsZero(row.P) && metricIsZero(row.Q) && metricIsZero(row.R) {
+		if strings.TrimSpace(row.Mode) == "" && z == "done" {
 			event, err = model.NewDoEvent(row.X, row.Y)
 			break
 		}
-		event, err = model.NewEvent(row.X, row.Y, z, metricField(row.P), metricField(row.Q), metricField(row.R))
+		event, err = model.NewEvent(row.X, row.Y, z)
 	default:
 		return model.Event{}, fmt.Errorf("unknown mode %q", row.Mode)
 	}
@@ -411,55 +590,49 @@ func eventFromRow(row taskRow) (model.Event, error) {
 		return model.Event{}, err
 	}
 	event.Done = row.Done != 0
-	return event, nil
-}
-
-func metricIsZero(value *float64) bool {
-	return value == nil || *value == 0
-}
-
-func metricField(value *float64) string {
-	if value == nil {
-		return ""
+	if event.Done && row.DoneAt != nil && strings.TrimSpace(*row.DoneAt) != "" {
+		stamp, stampErr := model.ParseDateTime(*row.DoneAt)
+		if stampErr != nil {
+			return model.Event{}, stampErr
+		}
+		event.DoneAt = stamp
 	}
-	return model.FormatMetric(*value)
+	return event, nil
 }
 
 func rowSQL(record Record) string {
 	event := record.Event
-	when := sqlString(event.X.Format(model.DateTimeFormat))
 	outcome := sqlString(event.Y)
 	if event.IsDo() {
-		return fmt.Sprintf("(%d, %s, %s, %s, NULL, NULL, NULL, NULL, %d)", record.ID, sqlString(model.ModeDo), when, outcome, doneBit(event.Done))
+		when := sqlString(event.X.Format(model.DateTimeFormat))
+		return fmt.Sprintf("(%d, %s, %s, %s, NULL, %d, %s)", record.ID, sqlString(model.ModeDo), when, outcome, doneBit(event.Done), doneAtSQL(event))
 	}
-	return fmt.Sprintf("(%d, %s, %s, %s, %s, %s, %s, %s, %d)",
+	when := sqlString(event.X.Format("2006-01-02"))
+	return fmt.Sprintf("(%d, %s, %s, %s, %s, %d, %s)",
 		record.ID,
 		sqlString(model.ModeAlign),
 		when,
 		outcome,
 		sqlString(event.Z),
-		strconv.FormatFloat(event.P, 'f', -1, 64),
-		strconv.FormatFloat(event.Q, 'f', -1, 64),
-		strconv.FormatFloat(event.R, 'f', -1, 64),
 		doneBit(event.Done),
+		doneAtSQL(event),
 	)
 }
 
 func rowAssignments(record Record) string {
 	event := record.Event
-	when := sqlString(event.X.Format(model.DateTimeFormat))
 	outcome := sqlString(event.Y)
 	if event.IsDo() {
-		return "mode = " + sqlString(model.ModeDo) + ", x = " + when + ", y = " + outcome + ", z = NULL, p = NULL, q = NULL, r = NULL, done = " + doneSQL(event.Done)
+		when := sqlString(event.X.Format(model.DateTimeFormat))
+		return "mode = " + sqlString(model.ModeDo) + ", x = " + when + ", y = " + outcome + ", z = NULL, done = " + doneSQL(event.Done) + ", done_at = " + doneAtSQL(event)
 	}
+	when := sqlString(event.X.Format("2006-01-02"))
 	return "mode = " + sqlString(model.ModeAlign) +
 		", x = " + when +
 		", y = " + outcome +
 		", z = " + sqlString(event.Z) +
-		", p = " + strconv.FormatFloat(event.P, 'f', -1, 64) +
-		", q = " + strconv.FormatFloat(event.Q, 'f', -1, 64) +
-		", r = " + strconv.FormatFloat(event.R, 'f', -1, 64) +
-		", done = " + doneSQL(event.Done)
+		", done = " + doneSQL(event.Done) +
+		", done_at = " + doneAtSQL(event)
 }
 
 func doneBit(done bool) int {
@@ -476,8 +649,37 @@ func doneSQL(done bool) string {
 	return "0"
 }
 
+func doneAtSQL(event model.Event) string {
+	if !event.Done || event.DoneAt.IsZero() {
+		return "NULL"
+	}
+	return sqlString(event.DoneAt.Format(model.DateTimeFormat))
+}
+
 func sqlString(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func plainURL(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
+}
+
+func storedURL(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "NULL"
+	}
+	return sqlString(value)
+}
+
+func storedChangeURL(change RepeatChange) string {
+	if !change.HasURL {
+		return "NULL"
+	}
+	return sqlString(strings.TrimSpace(change.URL))
 }
 
 func rowsChanged(dbPath, sql string) (bool, error) {

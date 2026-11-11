@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -113,6 +113,9 @@ func runCRUD(dataPath string, args []string, stdout, stderr io.Writer) int {
 		}
 	case model.ModeBox:
 		return runBox(dataPath, op, rest, stdout)
+	case model.ModeCal:
+		fmt.Fprintln(stdout, "Usage: crusade -m cal opens the calendar. It blocks time and does not take -c, -r, -u, or -d.")
+		return 1
 	case model.ModeNLP:
 		fmt.Fprintln(stdout, "Usage: crusade -m nlp")
 		return 1
@@ -133,17 +136,17 @@ func parseModeOp(args []string) (string, string, []string, error) {
 		switch arg {
 		case "-m":
 			if mode != "" {
-				return "", "", nil, fmt.Errorf("Use -m once. Choose do, align, box, or nlp.")
+				return "", "", nil, fmt.Errorf("Use -m once. Choose do, align, box, cal, or nlp.")
 			}
 			if idx+1 >= len(args) {
-				return "", "", nil, fmt.Errorf("Usage: crusade -m do|align|box|nlp -c|-r|-u|-d [args]")
+				return "", "", nil, fmt.Errorf("Usage: crusade -m do|align -c|-r|-u|-d [args]")
 			}
 			idx++
 			switch args[idx] {
-			case model.ModeDo, model.ModeAlign, model.ModeBox, model.ModeNLP:
+			case model.ModeDo, model.ModeAlign, model.ModeBox, model.ModeCal, model.ModeNLP:
 				mode = args[idx]
 			default:
-				return "", "", nil, fmt.Errorf("Use -m do, -m align, -m box, or -m nlp.")
+				return "", "", nil, fmt.Errorf("Use -m do, -m align, -m box, -m cal, or -m nlp.")
 			}
 		case "-c", "-r", "-u", "-d":
 			if op != "" {
@@ -161,7 +164,7 @@ func parseModeOp(args []string) (string, string, []string, error) {
 		return "", "", nil, fmt.Errorf("Unknown command. Run: crusade help")
 	}
 	if mode == "" {
-		return "", "", nil, fmt.Errorf("Usage: crusade -m do|align|box|nlp [-c|-r|-u|-d] [args]")
+		return "", "", nil, fmt.Errorf("Usage: crusade -m do|align|box|cal|nlp [-c|-r|-u|-d] [args]")
 	}
 	if op == "" {
 		if len(rest) != 0 {
@@ -222,6 +225,7 @@ func updateDo(dataPath string, args []string, stdout io.Writer) int {
 		return 1
 	}
 	event.Done = original.Done
+	event.DoneAt = original.DoneAt
 	if err := store.Update(dataPath, id, event); err != nil {
 		fmt.Fprintln(stdout, err)
 		return 1
@@ -269,17 +273,17 @@ func createAlign(dataPath string, args []string, stdout io.Writer) int {
 		}
 		return 0
 	}
-	fields, err := parseLabeledValues(args, map[string]bool{"x": true, "y": true, "z": true, "p": true, "q": true, "r": true})
+	fields, err := parseLabeledValues(args, map[string]bool{"x": true, "y": true, "z": true})
 	if err != nil {
 		fmt.Fprintln(stdout, err)
 		return 1
 	}
-	missing := missingFields(fields, []string{"x", "y", "z", "p", "q", "r"})
+	missing := missingFields(fields, []string{"x", "y", "z"})
 	if len(missing) > 0 {
 		fmt.Fprintf(stdout, "Missing required field(s): %s for direct add\n", strings.Join(missing, ", "))
 		return 1
 	}
-	event, err := model.NewEvent(fields["x"], fields["y"], fields["z"], fields["p"], fields["q"], fields["r"])
+	event, err := model.NewEvent(fields["x"], fields["y"], fields["z"])
 	if err != nil {
 		fmt.Fprintln(stdout, err)
 		return 1
@@ -293,7 +297,7 @@ func createAlign(dataPath string, args []string, stdout io.Writer) int {
 
 func updateAlign(dataPath string, args []string, stdout io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stdout, "Usage: crusade -m align -u <id> [x <value>] [y <value>] [z <value>] [p <score>] [q <score>] [r <score>]")
+		fmt.Fprintln(stdout, "Usage: crusade -m align -u <id> [x <YYYY-MM-DD>] [y <value>] [z <value>]")
 		return 1
 	}
 	id, err := parsePositiveInt(args[0], "ID")
@@ -320,7 +324,7 @@ func updateAlign(dataPath string, args []string, stdout io.Writer) int {
 		}
 		return 0
 	}
-	fields, err := parseLabeledValues(args[1:], map[string]bool{"x": true, "y": true, "z": true, "p": true, "q": true, "r": true})
+	fields, err := parseLabeledValues(args[1:], map[string]bool{"x": true, "y": true, "z": true})
 	if err != nil {
 		fmt.Fprintln(stdout, err)
 		return 1
@@ -467,14 +471,14 @@ func openConfig(stdout io.Writer) int {
 }
 
 func editEvent(seed model.Event) (model.Event, bool, error) {
-	tmp, err := os.CreateTemp("", "xyz-*.json")
+	tmp, err := os.CreateTemp("", "crusade-*.yaml")
 	if err != nil {
 		return model.Event{}, false, err
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
 
-	payload, err := json.MarshalIndent(model.ToJSONEvent(seed), "", "  ")
+	payload, err := model.ToYAML(seed)
 	if err != nil {
 		_ = tmp.Close()
 		return model.Event{}, false, err
@@ -512,11 +516,15 @@ func editEvent(seed model.Event) (model.Event, bool, error) {
 	if err != nil {
 		return model.Event{}, false, err
 	}
-	event, err := model.FromJSON(edited)
+	event, err := model.FromYAML(edited)
 	if err != nil {
+		if errors.Is(err, model.ErrBlankAlign) {
+			return model.Event{}, false, nil
+		}
 		return model.Event{}, false, err
 	}
 	event.Done = seed.Done
+	event.DoneAt = seed.DoneAt
 	return event, true, nil
 }
 
@@ -550,13 +558,9 @@ func printFieldMeanings(stdout io.Writer) {
 	fmt.Fprint(stdout, "Idea:\n")
 	fmt.Fprint(stdout, "  \"When X happens, I want Y outcome, so that I can drive Z impact\"\n\n")
 	fmt.Fprint(stdout, "XYZ Fields:\n")
-	fmt.Fprint(stdout, "  x: target trigger datetime (when outcome should be checked)\n")
+	fmt.Fprint(stdout, "  x: the day this happens, as YYYY-MM-DD\n")
 	fmt.Fprint(stdout, "  y: desired progress/outcome\n")
-	fmt.Fprint(stdout, "  z: why it matters / impact\n\n")
-	fmt.Fprint(stdout, "PQR Scores (0-10):\n")
-	fmt.Fprint(stdout, "  p: Jesus' will alignment\n")
-	fmt.Fprint(stdout, "  q: outward impact\n")
-	fmt.Fprint(stdout, "  r: embodied practice\n")
+	fmt.Fprint(stdout, "  z: why it matters / impact\n")
 }
 
 func printAlignList(records []store.Record, stdout io.Writer) {
@@ -569,12 +573,10 @@ func printAlignList(records []store.Record, stdout io.Writer) {
 	}
 	for idx, record := range records {
 		event := record.Event
-		avg := (event.P + event.Q + event.R) / 3
 		fmt.Fprintf(stdout, "   id: %d\n", record.ID)
-		fmt.Fprintf(stdout, "%d. x: %s\n", idx+1, event.X.Format(model.DateTimeFormat))
+		fmt.Fprintf(stdout, "%d. x: %s\n", idx+1, event.X.Format("2006-01-02"))
 		wrapLine(stdout, "   y: ", event.Y)
 		wrapLine(stdout, "   z: ", event.Z)
-		fmt.Fprintf(stdout, "   p: %s  q: %s  r: %s  avg: %s\n", model.FormatMetric(event.P), model.FormatMetric(event.Q), model.FormatMetric(event.R), model.FormatMetric(avg))
 		if idx < len(records)-1 {
 			fmt.Fprintln(stdout, strings.Repeat("-", 36))
 		}

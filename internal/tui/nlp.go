@@ -10,7 +10,6 @@ import (
 	"github.com/ryangerardwilson/crusade/internal/store"
 	"github.com/ryangerardwilson/crusade/internal/version"
 	"github.com/ryangerardwilson/crusade/nlp"
-	"golang.org/x/term"
 )
 
 const nlpHelp = `crusade -m nlp
@@ -33,7 +32,11 @@ func stdoutIsTerm(w io.Writer) bool {
 	if !ok {
 		return false
 	}
-	return term.IsTerminal(int(file.Fd()))
+	info, err := file.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
 }
 
 var openNLPModel = func() (tea.Model, error) {

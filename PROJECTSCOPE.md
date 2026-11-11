@@ -3,37 +3,41 @@
 ## Overview
 
 `crusade` is a Go/Bubble Tea terminal task tracker for Jobs-to-Be-Done outcome
-statements and `p/q/r` North Star scoring. It replaced the former Python
+statements. It replaced the former Python
 `curses` implementation so CLI parsing, storage, TUI rendering, and release
 packaging are separated cleanly.
 
 ## Product Contract
 
 - Align records are statements: `When X happens, I want Y outcome so I can Z`.
-  Empty x, y, or z is invalid. Each align record also stores numeric `p`, `q`, and `r`.
+  Empty x, y, or z is invalid. x is the day this happens, stored as `YYYY-MM-DD`.
 - Do records store the outcome and the day the task belongs to.
-  They do not store an x/y/z statement or scores.
-- Keep do records, align records, and boxes in the sqlx database `crusade`.
-  Align mode lists align records. Do mode lists do records. Box mode lists the checklist.
-  Practice sessions stay in the sqlx database `nlp`.
-- `crusade -m do` opens the do agenda. `crusade -m align` opens align mode. `crusade -m box` opens the daily checklist. `crusade -m nlp` opens the practice list. `q` quits the TUI. While a do task is being typed, `q` is a letter. Tab cycles do, align, box, and nlp, and returns each mode to the screen you left. Tab stays put while a do task is being typed and while an nlp session is being named or typed. crusade open resumes the last mode, or do when none is saved. Each mode puts the same blue badge, `DO`, `ALIGN`, `BOX`, or `NLP`, in the top right. The `nlp` command opens the practice list.
-- Do and align lists are checkbox rows drawn from the top of the terminal downward. Space marks the selected task done and leaves it in the list. `dd` still deletes it. Box shortcuts appear only while `?` is open. Below the box list, a momentum graph draws checked days as a contribution calendar: weeks are columns, weekdays are rows, bluer squares mean more boxes checked, and the caption is the current streak.
+  They do not store an x/y/z statement.
+- Keep do records, align records, boxes, and time blocks in the sqlx database `crusade`.
+  Align mode lists align records and has no month calendar. Do mode lists do records and keeps the month calendar. Box mode lists the checklist. Cal mode draws the week as an hour sheet sized to the screen. A cell shows part of a block, and the focus box shows the whole block under the cursor. o opens its meeting link in the browser. From the Super+C window, that also closes crusade.
+- `crusade -m do` opens the do agenda. `crusade -m align` opens align mode. `crusade -m box` opens the daily checklist. `q` quits the TUI. While a do task is being typed, `q` is a letter. Tab cycles do, align, box, cal, and nlp, and returns each mode to the screen you left. crusade open resumes the last mode, or do when none is saved. Each mode puts the same blue badge, `DO`, `ALIGN`, `BOX`, `CAL`, or `NLP`, in the top right. Cal mode blocks time. Each block has a title, a start, an end on one day, and an optional meeting url. Do tasks do not block time. h and l change the day. The week is an hour sheet sized to the screen. A cell shows part of a block, and the focus box shows the whole block under the cursor. o opens its meeting link in the browser. From the Super+C window, that also closes crusade. j and k move one hour at a time. A block starts and ends on the hour. v selects a span. n and e open a form for the title, the start, the end, an optional meeting url, and the repeat. days repeats on chosen weekdays. On a repeating block, that form applies to this event, this and following, or all events. d removes or deletes a repeating block. o is this event, f is this and following, and a is all events. A one-off block uses the same form to edit and dd to delete.
+- Do and align lists are checkbox rows drawn from the top of the terminal downward. Space marks the selected task done and leaves it in the list. `dd` still deletes it. `?` toggles a shortcuts modal over the current screen. In the box list, n adds a box after the selected one, e edits its text, and dd deletes it and any box under it. Those edits stay in the TUI. While a box is being typed, q is a letter. Below the box list, a momentum graph draws checked days as a contribution calendar: weeks are columns, weekdays are rows, bluer squares mean more boxes checked, and the caption is the current streak.
 - Do mode asks for the task text only. A new task is dated today in the agenda,
   or on the selected day of the month calendar. `e` edits that text. `r` changes
   the selected task's date. A date alone is stored at 23:59:59.
-  The do agenda and the do month show how many do tasks are marked done in the
-  current week. That week starts on Monday and ends on Sunday.
+  The do agenda and the do month show how many do tasks were marked done during
+  the current week, and how many do tasks were deleted during that same week.
+  The line reads "N items done and M deleted this week". That week starts on
+  Monday and ends on Sunday. The done count uses the moment the task is marked
+  done, not the day it is scheduled for. The deleted count uses the moment the
+  task is deleted. Deleting a task that was marked done this week counts it as
+  deleted and no longer as done.
 - Align mode is the outcome tracker. From the TUI, open Vim on that one record
-  to add at the selected date or edit the selected task, then save the row.
+  as YAML to add at the selected date or edit the selected task, then save the row.
 - Preserve the deterministic command grammar. CRUD names the mode and one operation:
-  - `crusade -m do` opens do mode. `crusade -m align` opens align mode. `crusade -m box` opens box mode. `crusade -m nlp` opens the practice list. `-c`, `-r`, `-u`, and `-d` are not nlp operations.
+  - `crusade -m do` opens do mode. `crusade -m align` opens align mode. `crusade -m box` opens box mode.
   - `crusade -m do|align -c|-r|-u|-d [args]`
   - `crusade -m box -r` shows today. `crusade -m box -c` and `crusade -m box -u` open the outline YAML in Vim and save every box.
   - `crusade -m do -c <outcome> [when]`
   - `crusade -m do -r [limit <count>]`
   - `crusade -m do -u <id> <outcome> [when]`
   - `crusade -m do -d <id>`
-  - `crusade -m align -c [x <datetime> y <outcome> z <impact> p <score> q <score> r <score>]`
+  - `crusade -m align -c [x <YYYY-MM-DD> y <outcome> z <impact>]`
   - `crusade -m align -r [limit <count>]`
   - `crusade -m align -u <id> [field <value> ...]`
   - `crusade -m align -d <id>`
@@ -43,17 +47,16 @@ packaging are separated cleanly.
 
 - `cmd/crusade`: binary entrypoint.
 - `internal/cli`: command grammar, editor flow, help, config, upgrade.
-- `internal/model`: mode, datetime, metric, and statement validation.
+- `internal/model`: mode, datetime, and the align YAML record.
 - `internal/store`: sqlx database load/save/add/update/delete, plus a one-time boxes import.
-- `internal/tui`: Bubble Tea agenda, month, checklist, and nlp surfaces plus Vim suspension and
+- `internal/tui`: Bubble Tea do agenda and month, align list, box checklist, cal time blocks, and the nlp practice list, plus Vim suspension and
   reload.
-- `nlp`: the practice-session mode. Its rows stay in the sqlx database `nlp`.
 - `internal/config`: XDG config.
 - `internal/version`: release-time version injection.
 
 The TUI and CLI share the sqlx database `crusade`. Align-mode add and edit suspend
-Bubble Tea and open Vim on that one record. Do mode edits the outcome in
-the terminal. The database lives under the sqlx root, which defaults to `~/.sqlx`.
+Bubble Tea and open Vim on that one record as YAML. Do mode edits the outcome in
+the terminal. Box mode adds, edits, and deletes each box in the terminal. The database lives under the sqlx root, which defaults to `~/.sqlx`.
 
 ## Config And Storage
 
@@ -80,10 +83,12 @@ model task
   x text not null
   y text not null
   z text
-  p real
-  q real
-  r real
   done integer not null
+  done_at text
+
+model deletion
+  id integer primary key
+  deleted_at text not null
 
 model box
   id integer primary key
@@ -97,14 +102,37 @@ model box_check
   id integer primary key
   day text not null
   path text not null
+
+model block
+  id integer primary key
+  title text not null
+  start_at text not null
+  end_at text not null
+
+model repeat
+  id integer primary key
+  title text not null
+  start_at text not null
+  end_at text not null
+  freq text not null
+  until_on text
+
+model repeat_change
+  id integer primary key
+  repeat_id integer not null
+  day text not null
+  skipped integer not null
+  title text
+  start_at text
+  end_at text
 ```
 
-Align rows store x, y, z, and p/q/r. Do rows store the outcome in y and the day in x.
-`mode` is `align` or `do`. A do row leaves z and the scores empty. `done` is 0 until the task is marked done. Marking done keeps the row.
+Align rows store x, y, and z. x is a day, `YYYY-MM-DD`. Do rows store the outcome in y and the day in x. Block rows store a title and the start and end of one span on a day. A do row is not a block. A repeat row stores that span plus daily, weekdays, weekly, or chosen weekdays, and an optional last day. A repeat change skips one day or replaces that day's title and times.
+`mode` is `align` or `do`. A do row leaves z empty. `done` is 0 until the task is marked done. Marking done keeps the row and stores `done_at` as that moment. Clearing the mark clears `done_at`. Deleting a do task removes the row and stores that moment in `deletion.deleted_at`. An align delete does not.
 `-r` prints that mode's records and each stable `id`. Align `-r` lists upcoming align records. Do `-r` lists every do record.
 `-u` and `-d` refuse an id from the other mode. A do date of `YYYY-MM-DD` is stored at 23:59:59, and omitting it on create uses today.
 
-An existing xecute database file is renamed to crusade on open. Boxes are imported once from the boxes outline and day files, which stay on disk. A saved `mode: think` row is an align record. A row with no mode, impact exactly `done`, and scores of zero is read as a do record. Config is `$XDG_CONFIG_HOME/xyz/config.json`. Crusade removes `data_yaml_path` and `data_csv_path` when an older file still has them.
+An existing xecute database file is renamed to crusade on open. Boxes are imported once from the boxes outline and day files, which stay on disk. A saved `mode: think` row is an align record. A row with no mode and impact exactly `done` is read as a do record. Config is `$XDG_CONFIG_HOME/xyz/config.json`. Crusade removes `data_yaml_path` and `data_csv_path` when an older file still has them.
 
 ## Non-Goals
 

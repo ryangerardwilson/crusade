@@ -3,8 +3,6 @@ package tui
 import (
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -14,63 +12,25 @@ import (
 	"github.com/ryangerardwilson/crusade/internal/store"
 )
 
-type boxEditorFinishedMsg struct {
-	err error
-}
-
-var openBoxEditor = func(path, text string) tea.Cmd {
-	fail := func(err error) tea.Cmd {
-		return func() tea.Msg { return boxEditorFinishedMsg{err: err} }
-	}
-	tmp, err := os.CreateTemp("", "crusade-boxes-*.yaml")
-	if err != nil {
-		return fail(err)
-	}
-	if _, err := tmp.WriteString(text); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmp.Name())
-		return fail(err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmp.Name())
-		return fail(err)
-	}
-	tmpPath := tmp.Name()
-	command := exec.Command("vim", tmpPath)
-	return tea.ExecProcess(command, func(err error) tea.Msg {
-		defer os.Remove(tmpPath)
-		edited, readErr := os.ReadFile(tmpPath)
-		if err != nil {
-			return boxEditorFinishedMsg{err: err}
-		}
-		if readErr != nil {
-			return boxEditorFinishedMsg{err: readErr}
-		}
-		outline, parseErr := box.ParseYAML(edited)
-		if parseErr != nil {
-			return boxEditorFinishedMsg{err: parseErr}
-		}
-		if saveErr := store.SaveOutline(path, outline); saveErr != nil {
-			return boxEditorFinishedMsg{err: saveErr}
-		}
-		return boxEditorFinishedMsg{}
-	})
-}
-
 type boxModel struct {
-	dataPath string
-	outline  box.Outline
-	checked  map[string]bool
-	day      string
-	selected int
-	showHelp bool
-	status   string
-	errText  string
-	width      int
-	height     int
-	activeDays map[string]bool
-	dayCounts  map[string]int
-	memory     modeMemory
+	dataPath      string
+	outline       box.Outline
+	checked       map[string]bool
+	day           string
+	selected      int
+	showHelp      bool
+	pendingDelete bool
+	composing     bool
+	composeNew    bool
+	composeText   string
+	composeCursor int
+	status        string
+	errText       string
+	width         int
+	height        int
+	activeDays    map[string]bool
+	dayCounts     map[string]int
+	memory        modeMemory
 }
 
 func runBox(dataPath string, stdout, stderr io.Writer) int {
@@ -120,62 +80,71 @@ func (m boxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = message.Width
 		m.height = message.Height
-	case boxEditorFinishedMsg:
-		if message.err != nil {
-			m.errText = message.err.Error()
-			m.status = ""
-			return m, nil
-		}
-		outline, err := store.LoadOutline(m.dataPath)
-		if err != nil {
-			m.errText = err.Error()
-			return m, nil
-		}
-		m.outline = outline
-		m.errText = ""
-		m.status = "Saved."
-		m.clamp()
 	case tea.KeyMsg:
 		key := message.String()
-		if key == "ctrl+c" || key == "esc" || key == "q" {
+		if key == "ctrl+c" {
+			return m, tea.Quit
+		}
+		if m.composing {
+			if key == "esc" {
+				m.cancelBoxCompose()
+				return m, nil
+			}
+			m.handleBoxComposeKey(key)
+			return m, nil
+		}
+		if m.showHelp && key != "tab" {
+			switch key {
+			case "?", "esc":
+				m.showHelp = false
+			case "q":
+				return m, tea.Quit
+			}
+			return m, nil
+		}
+		if key == "esc" || key == "q" {
 			return m, tea.Quit
 		}
 		if key == "tab" {
 			return m.cycleMode()
 		}
-		if m.showHelp {
-			if key == "?" {
-				m.showHelp = false
-			}
-			return m, nil
-		}
 		switch key {
 		case "?":
+			m.pendingDelete = false
 			m.showHelp = true
 		case "j", "down":
+			m.pendingDelete = false
 			m.move(1)
 		case "k", "up":
+			m.pendingDelete = false
 			m.move(-1)
 		case "h", "left":
+			m.pendingDelete = false
 			m.moveDate(-1)
 		case "l", "right":
+			m.pendingDelete = false
 			m.moveDate(1)
 		case "ctrl+h":
+			m.pendingDelete = false
 			m.moveDate(-7)
 		case "ctrl+l":
+			m.pendingDelete = false
 			m.moveDate(7)
 		case " ", "enter":
+			m.pendingDelete = false
 			m.toggleSelected()
+		case "n":
+			m.beginNewBox()
 		case "e":
-			payload, err := box.MarshalYAML(m.outline)
-			if err != nil {
-				m.errText = err.Error()
-				return m, nil
-			}
-			return m, openBoxEditor(m.dataPath, string(payload))
+			m.beginEditBox()
+		case "d":
+			m.deleteSelectedBox()
 		case "r":
+			m.pendingDelete = false
 			m.checked = map[string]bool{}
 			m.save("Reset " + m.day + ".")
+		default:
+			m.pendingDelete = false
 		}
 	}
 	return m, nil
@@ -184,10 +153,10 @@ func (m boxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m boxModel) View() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n", renderModeBanner("BOX", m.width))
-	fmt.Fprintf(&b, "%s\n\n", infoStyle.Render(fmt.Sprintf("%s  %d/%d", m.day, m.outline.CompletedCount(m.checked), m.outline.LeafCount())))
+	fmt.Fprintf(&b, "%s\n\n", infoStyle.Render(fmt.Sprintf("%s  %d/%d", headerDateText(m.day), m.outline.CompletedCount(m.checked), m.outline.LeafCount())))
 	items := m.outline.Flatten()
 	if len(items) == 0 {
-		b.WriteString(mutedStyle.Render("No boxes yet. Press e to edit the outline.") + "\n")
+		b.WriteString(mutedStyle.Render("No boxes yet. Press n to add one.") + "\n")
 	}
 	for index, item := range items {
 		mark := "[ ]"
@@ -205,18 +174,38 @@ func (m boxModel) View() string {
 		}
 		fmt.Fprintf(&b, "%s\n", line)
 	}
-	fmt.Fprintf(&b, "\n%s\n", m.renderMomentum())
-	if m.showHelp {
-		fmt.Fprintf(&b, "\n%s\n", mutedStyle.Render("h/l day   ctrl+h/l week   j/k move   space check   e edit   r reset   tab mode   ? help   q quit"))
-		fmt.Fprintf(&b, "%s\n", mutedStyle.Render("A parent is done when every box under it is done. The graph under the list is a contribution calendar: columns are weeks, rows are days, and bluer squares mean more boxes checked. The caption is the current streak. e opens Vim on the outline YAML, then crusade saves it."))
+	if m.composing {
+		fmt.Fprintf(&b, "\n%s\n", infoStyle.Render("box: "+composeShown(m.composeText, m.composeCursor)))
 	}
+	fmt.Fprintf(&b, "\n%s\n", m.renderMomentum())
 	if m.status != "" {
 		fmt.Fprintf(&b, "%s\n", mutedStyle.Render(m.status))
 	}
 	if m.errText != "" {
 		fmt.Fprintf(&b, "%s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(m.errText))
 	}
+	if m.showHelp {
+		return placeModal(b.String(), m.helpModal(), m.width, m.height)
+	}
 	return b.String()
+}
+
+func (m boxModel) helpModal() string {
+	items := []helpItem{
+		{key: "h / l", description: "Previous / next day"},
+		{key: "ctrl+h/l", description: "Previous / next week"},
+		{key: "j / k", description: "Move"},
+		{key: "space", description: "Check"},
+		{key: "n", description: "New box"},
+		{key: "e", description: "Edit text"},
+		{key: "dd", description: "Delete"},
+		{key: "r", description: "Reset the day"},
+		{key: "tab", description: "Do / align / box / cal / nlp"},
+		{key: "? / esc", description: "Close this guide"},
+		{key: "q", description: "Quit"},
+	}
+	detail := "A parent is done when every box under it is done. n adds a box after the selected one. e edits its text. dd deletes it and any box under it. While a box is being typed, q is a letter. The graph under the list is a contribution calendar: columns are weeks, rows are days, and bluer squares mean more boxes checked. The caption is the current streak."
+	return shortcutModal(m.width, "BOX", items, detail)
 }
 
 func (m *boxModel) move(delta int) {
@@ -536,6 +525,177 @@ func (m boxModel) renderContribution(today time.Time) string {
 	b.WriteByte('\n')
 	b.WriteString(mutedStyle.Render(contributionTooltip(m.day, counts[m.day])))
 	return b.String()
+}
+
+func (m *boxModel) beginNewBox() {
+	m.pendingDelete = false
+	m.composing = true
+	m.composeNew = true
+	m.composeText = ""
+	m.composeCursor = 0
+	m.errText = ""
+	m.status = "New box. Enter to save, esc to cancel."
+}
+
+func (m *boxModel) beginEditBox() {
+	items := m.outline.Flatten()
+	if len(items) == 0 {
+		m.pendingDelete = false
+		m.status = "No box selected to edit."
+		return
+	}
+	m.clamp()
+	item := items[m.selected]
+	m.pendingDelete = false
+	m.composing = true
+	m.composeNew = false
+	m.composeText = item.Label
+	m.composeCursor = len([]rune(item.Label))
+	m.errText = ""
+	m.status = "Edit box. Enter to save, esc to cancel."
+}
+
+func (m *boxModel) cancelBoxCompose() {
+	m.composing = false
+	m.composeNew = false
+	m.composeText = ""
+	m.composeCursor = 0
+}
+
+func (m *boxModel) handleBoxComposeKey(key string) {
+	if key == "enter" {
+		m.commitBoxCompose()
+		return
+	}
+	scratch := appModel{composeText: m.composeText, composeCursor: m.composeCursor}
+	scratch.handleComposeKey(key)
+	m.composeText = scratch.composeText
+	m.composeCursor = scratch.composeCursor
+}
+
+func (m *boxModel) commitBoxCompose() {
+	text := strings.TrimSpace(m.composeText)
+	if text == "" {
+		m.status = "Box cannot be empty."
+		return
+	}
+	previous := m.outline
+	previousSelected := m.selected
+	var (
+		next box.Outline
+		id   string
+		err  error
+	)
+	status := "Updated " + text + "."
+	if m.composeNew {
+		selected := ""
+		items := m.outline.Flatten()
+		if len(items) > 0 {
+			m.clamp()
+			selected = items[m.selected].ID
+		}
+		next, id, err = m.outline.InsertAfter(selected, text)
+		status = "Added " + text + "."
+	} else {
+		items := m.outline.Flatten()
+		if len(items) == 0 {
+			m.status = "No box selected to edit."
+			return
+		}
+		m.clamp()
+		id = items[m.selected].ID
+		next, err = m.outline.Rename(id, text)
+	}
+	if err != nil {
+		m.errText = err.Error()
+		m.status = ""
+		return
+	}
+	m.outline = next
+	if m.composeNew {
+		m.selectID(id)
+	}
+	if err := m.persistOutline(status); err != nil {
+		m.outline = previous
+		m.selected = previousSelected
+		m.errText = err.Error()
+		m.status = ""
+		return
+	}
+	m.cancelBoxCompose()
+}
+
+func (m *boxModel) deleteSelectedBox() {
+	items := m.outline.Flatten()
+	if len(items) == 0 {
+		m.pendingDelete = false
+		m.status = "No box selected to delete."
+		return
+	}
+	if !m.pendingDelete {
+		m.pendingDelete = true
+		m.status = "Press d again to delete the selected box."
+		return
+	}
+	m.pendingDelete = false
+	m.clamp()
+	item := items[m.selected]
+	next, err := m.outline.Delete(item.ID)
+	if err != nil {
+		m.errText = err.Error()
+		m.status = ""
+		return
+	}
+	previous := m.outline
+	previousSelected := m.selected
+	m.outline = next
+	if m.selected >= len(m.outline.Flatten()) {
+		m.selected = max(0, len(m.outline.Flatten())-1)
+	}
+	status := "Deleted " + item.Label + "."
+	if item.HasChildren {
+		status = "Deleted " + item.Label + " and the boxes under it."
+	}
+	if err := m.persistOutline(status); err != nil {
+		m.outline = previous
+		m.selected = previousSelected
+		m.errText = err.Error()
+		m.status = ""
+	}
+}
+
+func (m *boxModel) selectID(id string) {
+	for index, item := range m.outline.Flatten() {
+		if item.ID == id {
+			m.selected = index
+			return
+		}
+	}
+}
+
+func (m *boxModel) persistOutline(status string) error {
+	if err := store.SaveOutline(m.dataPath, m.outline); err != nil {
+		return err
+	}
+	checked, err := store.LoadDayChecks(m.dataPath, m.day)
+	if err != nil {
+		return err
+	}
+	active, err := store.LoadActiveDays(m.dataPath)
+	if err != nil {
+		return err
+	}
+	counts, err := store.LoadCheckCounts(m.dataPath)
+	if err != nil {
+		return err
+	}
+	m.checked = checked
+	m.activeDays = active
+	m.dayCounts = counts
+	m.errText = ""
+	m.status = status
+	m.clamp()
+	return nil
 }
 
 func (m *boxModel) clamp() {

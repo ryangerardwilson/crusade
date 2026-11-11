@@ -1,201 +1,183 @@
 # crusade
 
-crusade is a terminal tracker with three modes:
+`crusade` is a terminal-native Jobs-to-Be-Done tracker for outcome statements:
 
-- **do** is the agenda. A task is a line of text and the day it belongs to.
-- **align** is the outcome tracker. A row is a Jobs-to-Be-Done statement plus three scores.
-- **box** is the daily checklist, with a contribution calendar of days you checked.
+> When X happens, I want Y outcome so I can Z.
 
-One Go binary serves the Bubble Tea TUI and the scriptable CLI. Both read the same database.
+An align row stores that statement. x is the day it happens, as `YYYY-MM-DD`.
+Vim edits the row as YAML.
+
+The app is now a single Go binary with a Bubble Tea terminal surface and a
+deterministic CLI for scripting outcome capture.
 
 ## Install
 
-The packaged release is Linux x64. It does not need Go.
-
-```sh
+```bash
 curl -fsSL https://raw.githubusercontent.com/ryangerardwilson/crusade/main/install.sh | bash
 ```
 
-The installer puts the binary at `~/.crusade/bin/crusade` and the launcher at `~/.local/bin/crusade`. It also writes three compatibility launchers:
+The installer places the binary at `~/.crusade/bin/crusade` and writes the public
+launcher at `~/.local/bin/crusade`.
 
-| Launcher | What it runs |
-| --- | --- |
-| `xyz` | `crusade` |
-| `xecute` | `crusade` |
-| `boxes` | `crusade -m box` |
+Installer commands:
 
-`~/.local/bin` needs to be on `PATH`.
-
-Build from a checkout when you want the current source. That needs Go 1.26 and `sqlite3`.
-
-```sh
-git clone https://github.com/ryangerardwilson/crusade.git
-cd crusade
-./install.sh from .
+```bash
+install.sh version
+install.sh version 0.1.29
+install.sh upgrade
+install.sh from /path/to/crusade
 ```
 
-Other installer commands:
+Runtime commands:
 
-```sh
-./install.sh help
-./install.sh version          # print the latest release
-./install.sh version 0.1.0    # install that release
-./install.sh upgrade
-```
-
-## Open a mode
-
-```sh
-crusade -m do       # agenda
-crusade -m align    # outcomes
-crusade -m box      # daily checklist
-crusade -m nlp      # practice sessions
-crusade open        # last mode, or do when none is saved
+```bash
 crusade help
-nlp                 # same as crusade -m nlp
+crusade version
+crusade upgrade
+crusade config
+crusade open
 ```
-
-In the TUI, Tab cycles do, then align, then box, then nlp, and returns each mode to the screen you left. `q` quits. While a do task is being typed, `q` is a letter. Tab stays put while a do task is being typed and while an nlp session is being named or typed.
-
-Each mode shows only its own records. The mode badge in the top right is `DO`, `ALIGN`, `BOX`, or `NLP`.
-
-## Do
-
-A do task is the text you type. In the agenda it is dated today. In the month calendar it is dated the selected day. A date with no clock time is stored at 23:59:59.
-
-```sh
-crusade -m do -c "mail the letter"
-crusade -m do -c "mail the letter" 2026-06-13
-crusade -m do -c "mail the letter" "2026-06-13 15:00"
-crusade -m do -r
-crusade -m do -r limit 10
-crusade -m do -u 3 "mail the letter"
-crusade -m do -d 3
-```
-
-`-r` prints an `id`. `-u` and `-d` use that id and refuse a row from another mode.
-
-TUI keys:
-
-| Key | Action |
-| --- | --- |
-| `n` | Type a new task |
-| `e` | Edit the selected task |
-| `r` | Reschedule the selected task |
-| `space` | Mark the selected task done and leave it in the list |
-| `dd` | Delete the selected task |
-| `a` | Switch agenda and month |
-| `t` | Jump to today |
-| `j` / `k` | Move the row |
-| `H` / `L` | Previous or next day that has a task |
-| `?` | Help |
-
-In the month view, `h` and `l` move a day, `j` and `k` move a week, Ctrl+h and Ctrl+l move a month, and Ctrl+k and Ctrl+j move a year. Enter moves between the calendar and that day's tasks. Escape leaves the day list. A second Escape quits.
-
-The agenda and the month show how many do tasks are marked done in the current week, Monday through Sunday.
-
-While typing, the line accepts the usual readline-style keys: Ctrl+A, Ctrl+E, Ctrl+B, Ctrl+F, Ctrl+H, Ctrl+D, Ctrl+K, Ctrl+U, Ctrl+W, Alt+B, Alt+F, and the arrows.
-
-## Align
-
-An align row is the statement "when X happens, I want Y so I can Z", plus three scores:
-
-| Field | Meaning |
-| --- | --- |
-| `x` | When it happens |
-| `y` | The outcome |
-| `z` | Why it matters |
-| `p` | Alignment |
-| `q` | Outward impact |
-| `r` | Embodied practice |
-
-X, y, and z are required. Scores are numbers.
-
-```sh
-crusade -m align -c x "2026-01-26 00:00" y "ship the patch" z "reduce drift" p 7 q 8 r 6
-crusade -m align -r limit 5
-crusade -m align -u 12 y "updated outcome" p 8.5
-crusade -m align -d 12
-```
-
-`-r` lists upcoming rows. Bare `-c`, or `-u` with only an id, opens `$VISUAL`, then `$EDITOR`, then `vim` on that one record. Saving the file writes the row.
-
-In the TUI, `n` and `e` open that same editor. `a`, `t`, `space`, and `dd` behave as they do in do mode. Align ignores `r`.
-
-## Box
-
-Box mode is the daily checklist in the same database. A parent box is done when every box under it is done.
-
-```sh
-crusade -m box -r    # show today
-crusade -m box -c    # edit the outline
-crusade -m box -u    # edit the outline
-```
-
-`-c` and `-u` open the whole outline as YAML in your editor. Saving replaces every box. The file looks like this:
-
-```yaml
-version: 1
-boxes:
-  - label: Move
-  - label: Work
-    children:
-      - label: Email
-      - label: Deep work
-```
-
-Labels become ids such as `work/email`. Checking a box is a TUI action, not a CLI flag.
-
-TUI keys:
-
-| Key | Action |
-| --- | --- |
-| `h` / `l` | Previous or next day |
-| Ctrl+h / Ctrl+l | Previous or next week |
-| `j` / `k` | Move in the list |
-| `space` | Check or uncheck |
-| `e` | Edit the outline in your editor |
-| `r` | Reset the viewed day |
-| `?` | Show the shortcut line |
-| `q` | Quit |
-
-Under the list, a momentum graph draws checked days as a contribution calendar. Weeks are columns, weekdays are rows, and bluer squares mean more boxes checked that day. The caption is the current streak.
 
 ## Storage
 
-Config is an empty JSON object:
+Config lives at `$XDG_CONFIG_HOME/xyz/config.json`, with fallback
+`~/.config/xyz/config.json`. The file is an empty object. Crusade removes
+`data_yaml_path` and `data_csv_path` when an older file still has them.
 
-```text
-$XDG_CONFIG_HOME/xyz/config.json
-~/.config/xyz/config.json
-```
-
-The directory name stays `xyz` so existing installs keep their config. `crusade config` opens that file. Older files may still contain `data_yaml_path` or `data_csv_path`. Crusade removes those keys. It does not read them.
-
-Tasks, boxes, and day checks live in one sqlite database:
+Tasks live in the sqlx database `crusade`:
 
 ```text
 $SQLX_ROOT/data/crusade.sqlite
 ~/.sqlx/data/crusade.sqlite
 ```
 
-Crusade talks to `sqlite3` directly (`/usr/bin/sqlite3`, or `$SQLX_SQLITE`). The `sqlx` command is not required to run it.
+```text
+model task
+  id integer primary key
+  mode text not null
+  x text not null
+  y text not null
+  z text
+  done integer not null
+  done_at text
 
-The tables are `task`, `box`, and `box_check`. A do row stores the outcome in `y` and the day in `x`. An align row stores x, y, z, and p, q, r. `done` is 0 until Space marks the row done.
+model deletion
+  id integer primary key
+  deleted_at text not null
 
-The first time box mode opens an empty outline, crusade imports one from `BOXES_CONFIG`, `~/.config/boxes/config.json`, or `~/Documents/notes/rituals.txt`, and imports day files under `~/.local/share/boxes/days`. Those files stay on disk and are not read again.
+model box
+  id integer primary key
+  path text not null
+  label text not null
+  parent_path text not null
+  position integer not null
+  depth integer not null
 
-## Develop
+model box_check
+  id integer primary key
+  day text not null
+  path text not null
 
-From this repository, with the home `go.work` out of the way:
+model block
+  id integer primary key
+  title text not null
+  start_at text not null
+  end_at text not null
 
-```sh
-GOWORK=off go test ./...
-./install.sh from .
+model repeat
+  id integer primary key
+  title text not null
+  start_at text not null
+  end_at text not null
+  freq text not null
+  until_on text
+
+model repeat_change
+  id integer primary key
+  repeat_id integer not null
+  day text not null
+  skipped integer not null
+  title text
+  start_at text
+  end_at text
 ```
 
-`./push_release_upgrade.sh` tests, pushes `main`, publishes the next patch tag, and installs that release. Pass an explicit version when you do not want the next patch:
+Align rows require x, y, and z. Do rows store the outcome in y and the day in x. Block rows store a title and the start and end of one span on a day. A repeat row stores that span plus daily, weekdays, weekly, or chosen weekdays, and an optional last day. A repeat change skips one day or replaces that day's title and times.
+`-m align` and `-m do` choose which rows a command reads or changes. `-m` with no operation opens that mode. A saved `mode: think` row
+is an align row. A row with no mode and impact exactly `done` is read as a do record.
+Boxes live in the same database. An existing boxes outline is imported once from `BOXES_CONFIG`, `~/.config/boxes/config.json`, or `~/Documents/notes/rituals.txt`. Day files under `~/.local/share/boxes/days` are imported in that same step. Those files stay on disk.
 
-```sh
-./push_release_upgrade.sh 0.2.0
+## CLI
+
+Name the mode and one operation. `-c` creates, `-r` reads, `-u` updates, and `-d` deletes.
+
+```bash
+crusade -m do
+crusade -m align
+crusade -m box
+crusade -m box -r
+crusade -m box -c
+crusade -m box -u
+
+crusade -m do -c "mail the letter"
+crusade -m do -c "mail the letter" 2026-06-13
+crusade -m do -r limit 10
+crusade -m do -u 3 "mail the letter"
+crusade -m do -d 3
+
+crusade -m align -r limit 5
+crusade -m align -c x 2026-01-26 y "ship the patch" z "reduce drift"
+crusade -m align -c
+crusade -m align -u 12
+crusade -m align -u 12 y "updated outcome"
+crusade -m align -d 12
+```
+
+Align `-c` and `-u` with no field values open that record as YAML in `$VISUAL`, `$EDITOR`, or `vim`. Box `-c` and `-u` open that same editor on the whole outline as YAML, and saving the file replaces every box. Align `-r` lists upcoming rows. Box `-r` shows today. Do `-r` lists every do row. A do date without a clock time is stored at 23:59:59, and omitting it on create uses today. Do and align `-u` and `-d` use the `id` printed by `-r` and refuse a row from the other mode.
+
+## TUI
+
+```bash
+crusade -m do
+crusade -m align
+crusade -m box
+crusade -m cal
+crusade -m nlp
+```
+
+The agenda, month calendar, and selected-day outcomes start
+at the top of the terminal and run downward. Do, align, box, cal, and nlp each put the same blue mode badge in the top right. `?` toggles a bordered
+shortcuts modal over that screen. The guide stays sectioned so shortcut columns keep their alignment.
+
+Keys:
+
+```text
+q/Ctrl+C/Esc quit (`q` types while a task is being entered)
+?          help
+tab        cycle do, align, box, cal, and nlp
+a          do: toggle agenda/month
+t          jump to today
+n          do: type a task; align: add a task on the selected date in Vim; cal: open the block form
+e / i      do: edit the task text; align: edit the selected task in Vim; cal: edit the selected block
+r          do: reschedule the selected task; cal: edit the selected block
+hjkl       move row or date
+v          cal: select a span on the time grid
+H/L        agenda: previous/next day with outcomes
+Ctrl+h/l   month: previous/next month
+Ctrl+k/j   month: previous/next year
+Enter      month: move focus between calendar grid and selected day outcomes
+space      mark the selected task done
+dd         delete selected outcome; cal: delete a one-off block
+```
+
+`crusade -m do` opens the do agenda. `crusade -m align` opens align mode. `crusade -m box` opens the daily checklist. A new do task is the text you type, stored as an outcome on today in the agenda, or on the selected day in the month calendar. `e` edits that text. `r` changes the selected task's date; a date alone is stored at 23:59:59. The do agenda and the do month show how many do tasks were marked done during the current week and how many do tasks were deleted during that same week. The line reads N items done and M deleted this week. That week starts on Monday and ends on Sunday. The done count uses the moment the task is marked done, not the day the task is scheduled for. The deleted count uses the moment the task is deleted. Deleting a task that was marked done this week counts it as deleted and no longer as done. Align mode stores x, y, and z and refuses a row that omits any of them. x is a day, stored as YYYY-MM-DD. In align mode, `n` and `e` open Vim on that one record as YAML. The TUI validates the YAML and saves the row. `q` quits. While a do task is being typed, `q` is a letter. Tab cycles do, align, box, cal, and nlp, and returns each mode to the screen you left. Align mode is a list. Cal mode blocks time with a title, a start, an end on one day, and an optional meeting url. Do tasks do not block time. The week is an hour sheet sized to the screen. A cell shows part of a block, and the focus box shows the whole block under the cursor. o opens its meeting link in the browser. From the Super+C window, that also closes crusade. j and k move one hour at a time. A block starts and ends on the hour. v selects a span. n and e open a form for the title, the start, the end, an optional meeting url, and the repeat. days repeats on chosen weekdays. On a repeating block, that form applies to this event, this and following, or all events. d removes or deletes a repeating block. o is this event, f is this and following, and a is all events. A one-off block uses the same form to edit and dd to delete. While a block is being typed, q is a letter. crusade open resumes the last mode, or do when none is saved. Each mode shows only its own records. An unchanged new-task draft is removed automatically. Box mode uses h/l to change day, space to check, n to add a box after the selected one, e to edit its text, dd to delete it and any box under it, and r to reset the day. While a box is being typed, q is a letter. A parent box is done when every box under it is done. Below the list, a momentum graph draws checked days as a contribution calendar: weeks are columns, weekdays are rows, bluer squares mean more boxes checked, and the caption is the current streak. Today stays open until it is checked, and the streak still counts through yesterday. Box shortcuts stay hidden until `?`. Do and align lists are checkbox rows. Space marks the selected task done and leaves it in the list. `dd` still deletes it.
+
+## Development
+
+```bash
+go test ./...
+go run ./cmd/crusade help
+go run ./cmd/crusade -m align -r limit 5
+./install.sh from .
+./push_release_upgrade.sh
 ```

@@ -10,6 +10,7 @@ import (
 func TestNLPModeOnAPipePrintsHelp(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	t.Setenv("SQLX_ROOT", filepath.Join(root, "sqlx"))
 	var out, errb bytes.Buffer
 	if code := Run([]string{"-m", "nlp"}, &out, &errb); code != 0 {
@@ -26,6 +27,7 @@ func TestNLPModeOnAPipePrintsHelp(t *testing.T) {
 func TestNLPModeRejectsRecordFlags(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	t.Setenv("SQLX_ROOT", filepath.Join(root, "sqlx"))
 	var out bytes.Buffer
 	if code := Run([]string{"-m", "nlp", "-c"}, &out, &bytes.Buffer{}); code == 0 || !strings.Contains(out.String(), "Usage: crusade -m nlp") {

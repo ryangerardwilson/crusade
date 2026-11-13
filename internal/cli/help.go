@@ -17,7 +17,7 @@ open a mode:
   crusade open
     show the radial menu. The last mode starts selected.
     The order is do, cal, box, nlp, align.
-    Leaving a mode returns to the menu. Esc on the menu quits.
+    Leaving a mode returns to the menu. Esc on the menu quits. Enter or ctrl+m opens the selected mode.
   crusade -m do
     open the do list in vim
   crusade -m align

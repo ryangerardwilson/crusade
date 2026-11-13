@@ -84,6 +84,13 @@ func TestQMLFilesAreEmbedded(t *testing.T) {
 			t.Fatalf("%s: %v", name, err)
 		}
 	}
+	shell, err := os.ReadFile(filepath.Join(dir, "shell.qml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(shell), "Qt.Key_M") || !strings.Contains(string(shell), "ControlModifier") {
+		t.Fatal("ctrl+m does not open the selected radial mode")
+	}
 }
 
 func envMap(extra []string) map[string]string {

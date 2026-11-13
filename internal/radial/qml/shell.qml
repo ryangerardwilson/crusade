@@ -68,7 +68,7 @@ ShellRoot {
             event.accepted = true;
             return ;
         }
-        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space || (event.key === Qt.Key_M && (event.modifiers & Qt.ControlModifier))) {
             if (root.selectedMode)
                 root.writeResult("select", root.selectedMode.name || "");
 
@@ -212,7 +212,7 @@ ShellRoot {
                 Text {
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
-                    text: "enter opens    esc closes"
+                    text: "enter or ctrl+m opens    esc closes"
                     color: "#707070"
                     font.family: "JetBrainsMono Nerd Font"
                     font.pixelSize: 10

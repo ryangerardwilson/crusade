@@ -18,6 +18,33 @@ func renderTypedLine(raw, target, input string, width int, showCursor bool) stri
 	inputRunes := []rune(input)
 	targetRunes := []rune(target)
 	var out strings.Builder
+	var run []rune
+	runKind := 0
+	flush := func() {
+		if len(run) == 0 {
+			return
+		}
+		text := string(run)
+		run = run[:0]
+		switch runKind {
+		case 1:
+			out.WriteString(text)
+		case 2:
+			out.WriteString(mutedStyle.Render(text))
+		case 3:
+			out.WriteString(statusStyle.Render(text))
+		case 4:
+			out.WriteString(errorStyle.Render(text))
+		}
+		runKind = 0
+	}
+	write := func(kind int, r rune) {
+		if len(run) > 0 && kind != runKind {
+			flush()
+		}
+		runKind = kind
+		run = append(run, r)
+	}
 	displayPos := 0
 	inputPos := 0
 	cursorRendered := false
@@ -27,41 +54,42 @@ func renderTypedLine(raw, target, input string, width int, showCursor bool) stri
 		}
 		if r == '\t' {
 			for spaces := 0; spaces < 4 && displayPos < width; spaces++ {
-				out.WriteRune(' ')
+				write(1, ' ')
 				displayPos++
 			}
 			continue
 		}
 		if showCursor && !cursorRendered && inputPos == len(inputRunes) {
-			out.WriteString(statusStyle.Render("█"))
+			write(3, '█')
 			displayPos++
 			cursorRendered = true
 			continue
 		}
 		ch := r
-		style := mutedStyle
+		kind := 2
 		if inputPos < len(inputRunes) {
 			if inputPos < len(targetRunes) && inputRunes[inputPos] == targetRunes[inputPos] {
 				ch = inputRunes[inputPos]
-				style = statusStyle
+				kind = 3
 			} else {
 				ch = '█'
-				style = errorStyle
+				kind = 4
 			}
 			inputPos++
 		}
-		out.WriteString(style.Render(string(ch)))
+		write(kind, ch)
 		displayPos++
 	}
 	if showCursor && !cursorRendered && inputPos == len(inputRunes) && displayPos < width {
-		out.WriteString(statusStyle.Render("█"))
+		write(3, '█')
 		displayPos++
 	}
 	for inputPos < len(inputRunes) && displayPos < width {
-		out.WriteString(errorStyle.Render("█"))
+		write(4, '█')
 		inputPos++
 		displayPos++
 	}
+	flush()
 	return out.String()
 }
 

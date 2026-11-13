@@ -140,11 +140,8 @@ func TestCtrlNSkipsTheLineAsDone(t *testing.T) {
 	previous := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.ANSI256)
 	t.Cleanup(func() { lipgloss.SetColorProfile(previous) })
-	var want strings.Builder
-	for _, r := range "alpha" {
-		want.WriteString(statusStyle.Render(string(r)))
-	}
-	if got := m.renderTypeLine(0); got != want.String() || !strings.Contains(got, "38;5;80") {
+	want := statusStyle.Render("alpha")
+	if got := m.renderTypeLine(0); got != want || !strings.Contains(got, "38;5;80") {
 		t.Fatalf("skipped line %q", got)
 	}
 }
@@ -313,4 +310,33 @@ func renderedLineCount(value string) int {
 
 func stripANSI(value string) string {
 	return ansiRE.ReplaceAllString(value, "")
+}
+
+func TestTypingKeysDoNotRewriteTheSavedPlace(t *testing.T) {
+	m := testModel()
+	m.savePlace = true
+	calls := 0
+	previous := persistPlace
+	persistPlace = func(string, string) error {
+		calls++
+		return nil
+	}
+	t.Cleanup(func() { persistPlace = previous })
+
+	opened := m.remember()
+	if calls != 1 {
+		t.Fatalf("open saves = %d", calls)
+	}
+	next, _ := opened.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	typed := next.(model)
+	next, _ = typed.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	if calls != 1 {
+		t.Fatalf("typing saves = %d", calls)
+	}
+	left := next.(model)
+	left.screen = screenCourses
+	_ = left.remember()
+	if calls != 2 {
+		t.Fatalf("leave saves = %d", calls)
+	}
 }

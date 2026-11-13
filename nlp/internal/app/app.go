@@ -41,8 +41,9 @@ var (
 )
 
 type model struct {
-	cfg       Config
-	savePlace bool
+	cfg        Config
+	savePlace  bool
+	savedPlace string
 
 	screen screen
 	before screen
@@ -140,8 +141,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return next, cmd
 	}
 	if updated, ok := next.(model); ok {
-		updated.remember()
-		return updated, cmd
+		return updated.remember(), cmd
 	}
 	return next, cmd
 }
@@ -528,10 +528,24 @@ func (m model) courseSlug() string {
 	return m.cfg.Courses[m.courseIndex].SourceFile
 }
 
-func (m model) remember() {
+// persistPlace writes the session place. Tests replace it.
+var persistPlace = state.SavePlace
+
+func (m model) remember() model {
 	if !m.savePlace {
-		return
+		return m
 	}
+	slug, cursor := m.placeToSave()
+	token := slug + "\n" + cursor
+	if token == m.savedPlace {
+		return m
+	}
+	_ = persistPlace(slug, cursor)
+	m.savedPlace = token
+	return m
+}
+
+func (m model) placeToSave() (string, string) {
 	screen := m.screen
 	if screen == screenHelp {
 		screen = m.before
@@ -548,7 +562,7 @@ func (m model) remember() {
 	if screen == screenType {
 		kind = "type"
 	}
-	_ = state.SavePlace(slug, fmt.Sprintf("%s %d", kind, selected))
+	return slug, fmt.Sprintf("%s %d", kind, selected)
 }
 
 func (m *model) restore(slug, cursor string) {

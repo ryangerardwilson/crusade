@@ -51,6 +51,7 @@ func TestBoxToggleSavesAndDayMoveDoesNotCreateRows(t *testing.T) {
 }
 
 func TestModeKeyDoesNotToggle(t *testing.T) {
+	isolateSQLX(t)
 	m := newAppModel(filepath.Join(t.TempDir(), "tasks.sqlite"), nil)
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
 	got := next.(appModel)
@@ -309,6 +310,7 @@ func TestContributionCalendar(t *testing.T) {
 }
 
 func TestSaveUpdatesTheStreakDay(t *testing.T) {
+	isolateSQLX(t)
 	path := filepath.Join(t.TempDir(), "crusade.sqlite")
 	t.Setenv("BOXES_CONFIG", "")
 	day := time.Now().Local().Format(time.DateOnly)

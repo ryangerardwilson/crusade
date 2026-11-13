@@ -15,14 +15,6 @@ const blockModel = "model block\n" +
 	"  end_at text not null\n" +
 	"  url text\n"
 
-const createBlock = `CREATE TABLE IF NOT EXISTS block (
-  "id" INTEGER PRIMARY KEY,
-  "title" TEXT NOT NULL,
-  "start_at" TEXT NOT NULL,
-  "end_at" TEXT NOT NULL,
-  "url" TEXT
-)`
-
 // BlockRecord is one span of clock time. It is not a do task.
 type BlockRecord struct {
 	ID    int

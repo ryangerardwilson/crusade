@@ -1,6 +1,7 @@
 package store
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -11,7 +12,7 @@ import (
 )
 
 func TestSaveLoadPreservesStableIDsAndSorts(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "crusade.sqlite")
+	path := testDB(t)
 	later := mustEvent(t, "2026-02-01 00:00", "later")
 	earlier := mustEvent(t, "2026-01-01 00:00", "earlier")
 	if err := Save(path, []Record{{ID: 42, Event: later}, {ID: 7, Event: earlier}}); err != nil {
@@ -33,7 +34,7 @@ func TestSaveLoadPreservesStableIDsAndSorts(t *testing.T) {
 }
 
 func TestCRUDUsesStableIDsAcrossChronologicalReordering(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "crusade.sqlite")
+	path := testDB(t)
 	id, err := AddRecord(path, mustEvent(t, "2026-06-01 00:00", "first"))
 	if err != nil {
 		t.Fatal(err)
@@ -71,7 +72,7 @@ func TestCRUDUsesStableIDsAcrossChronologicalReordering(t *testing.T) {
 }
 
 func TestOpenCreatesEmptyDatabaseAndKeepsRows(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "crusade.sqlite")
+	dbPath := testDB(t)
 	created, err := Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
@@ -103,7 +104,7 @@ func TestOpenCreatesEmptyDatabaseAndKeepsRows(t *testing.T) {
 }
 
 func TestSaveRejectsEmptyImpact(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "crusade.sqlite")
+	dbPath := testDB(t)
 	event := model.Event{X: mustEvent(t, "2026-01-01 00:00", "kept").X, Y: "kept"}
 	if err := Save(dbPath, []Record{{ID: 1, Event: event}}); err == nil || !strings.Contains(err.Error(), "impact") {
 		t.Fatalf("save without impact = %v", err)
@@ -140,6 +141,32 @@ func TestDatabaseMatchesSQLX(t *testing.T) {
 	}
 }
 
+func testDB(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv("SQLX_ROOT", root)
+	t.Setenv("BOXES_CONFIG", filepath.Join(root, "missing-outline.txt"))
+	return DatabasePath()
+}
+
+func seedSQLite(t *testing.T, sql string) string {
+	t.Helper()
+	path := testDB(t)
+	return seedSQLiteFile(t, path, sql)
+}
+
+func seedSQLiteFile(t *testing.T, path, sql string) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/usr/bin/sqlite3", path, sql)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("seed sqlite: %v\n%s", err, out)
+	}
+	return path
+}
+
 func mustEvent(t *testing.T, date, outcome string) model.Event {
 	t.Helper()
 	event, err := model.NewEvent(date, outcome, "impact")
@@ -150,9 +177,6 @@ func mustEvent(t *testing.T, date, outcome string) model.Event {
 }
 
 func TestDoneColumnMigratesAndRoundTrips(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "crusade.sqlite")
-	t.Setenv("BOXES_CONFIG", "")
 	old := `CREATE TABLE task (
   id INTEGER PRIMARY KEY,
   mode TEXT NOT NULL,
@@ -165,9 +189,7 @@ func TestDoneColumnMigratesAndRoundTrips(t *testing.T) {
 );
 INSERT INTO task(id, mode, x, y) VALUES (1, 'do', '2026-06-13 23:59:59', 'kept task');
 `
-	if err := execSQL(path, old); err != nil {
-		t.Fatal(err)
-	}
+	path := seedSQLite(t, old)
 	if _, err := Open(path); err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +239,7 @@ INSERT INTO task(id, mode, x, y) VALUES (1, 'do', '2026-06-13 23:59:59', 'kept t
 }
 
 func TestDoneAtRoundTripsAndClears(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "crusade.sqlite")
+	path := testDB(t)
 	event, err := model.NewDoEvent("2026-10-22 23:59:59", "fold clothes")
 	if err != nil {
 		t.Fatal(err)
@@ -247,7 +269,7 @@ func TestDoneAtRoundTripsAndClears(t *testing.T) {
 }
 
 func TestDeleteCountsDoTasksThisWeek(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "crusade.sqlite")
+	path := testDB(t)
 	doEvent, err := model.NewDoEvent("2026-10-22 23:59:59", "fold clothes")
 	if err != nil {
 		t.Fatal(err)
@@ -307,8 +329,6 @@ func TestDeletionsDuringWeekStartsOnMonday(t *testing.T) {
 }
 
 func TestAlignDropsScoresAndStoresTheDate(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "crusade.sqlite")
-	t.Setenv("BOXES_CONFIG", "")
 	old := `CREATE TABLE task (
   id INTEGER PRIMARY KEY,
   mode TEXT NOT NULL,
@@ -325,9 +345,7 @@ INSERT INTO task(id, mode, x, y, z, p, q, r) VALUES
   (3, 'do', '2026-06-14 23:59:59', 'mail the letter', NULL, NULL, NULL, NULL),
   (4, '', '2026-03-01 00:00:00', 'real outcome', 'done', 1, 0, 0);
 `
-	if err := execSQL(path, old); err != nil {
-		t.Fatal(err)
-	}
+	path := seedSQLite(t, old)
 	if _, err := Open(path); err != nil {
 		t.Fatal(err)
 	}

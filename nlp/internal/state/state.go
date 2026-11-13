@@ -32,26 +32,6 @@ const courseModel = "model course\n" +
 	"  body text not null\n" +
 	"  bundled integer not null\n"
 
-const createORM = `CREATE TABLE IF NOT EXISTS sqlx_orm (
-  model TEXT PRIMARY KEY,
-  body TEXT NOT NULL,
-  position INTEGER NOT NULL
-)`
-
-const createMeta = `CREATE TABLE IF NOT EXISTS meta (
-  "id" INTEGER PRIMARY KEY,
-  "key" TEXT NOT NULL,
-  "value" TEXT
-)`
-
-const createCourse = `CREATE TABLE IF NOT EXISTS course (
-  "id" INTEGER PRIMARY KEY,
-  "slug" TEXT NOT NULL,
-  "name" TEXT NOT NULL,
-  "body" TEXT NOT NULL,
-  "bundled" INTEGER NOT NULL
-)`
-
 type courseRow struct {
 	ID      int    `json:"id"`
 	Slug    string `json:"slug"`
@@ -102,22 +82,10 @@ func LoadCourses(version string) ([]course.Course, error) {
 }
 
 func openDB() (string, error) {
-	dbPath := databasePath()
-	if err := ensure(dbPath); err != nil {
+	if err := ensure(); err != nil {
 		return "", err
 	}
-	return dbPath, nil
-}
-
-func databasePath() string {
-	return filepath.Join(sqlxRoot(), "data", databaseName+".sqlite")
-}
-
-func sqlxRoot() string {
-	if root := os.Getenv("SQLX_ROOT"); root != "" {
-		return expandPath(root)
-	}
-	return filepath.Join(homeDir(), ".sqlx")
+	return databaseName, nil
 }
 
 func homeDir() string {
@@ -384,95 +352,18 @@ func setMeta(dbPath, key, value string) error {
 	return execSQL(dbPath, "INSERT INTO meta(key, value) VALUES ("+sqlString(key)+", "+sqlString(value)+");\n")
 }
 
-func ensure(dbPath string) error {
-	if err := prepareDirs(dbPath); err != nil {
+func ensure() error {
+	if _, err := sqlxCall("create", "database", databaseName); err != nil {
 		return err
 	}
-	sql := "PRAGMA journal_mode=WAL;\n" + createORM + ";\n" + createMeta + ";\n" + createCourse + ";\n" + "DELETE FROM sqlx_orm WHERE model = 'bookmark';\n" + ormUpsertSQL()
-	if err := execSQL(dbPath, sql); err != nil {
+	if _, err := sqlxCall(databaseName, "once", "drop_bookmark", "DROP TABLE IF EXISTS bookmark; DELETE FROM sqlx_orm WHERE model = 'bookmark';"); err != nil {
 		return err
 	}
-	if err := os.Chmod(dbPath, 0o600); err != nil {
-		return err
-	}
-	return writeORMFile(dbPath)
-}
-
-func prepareDirs(dbPath string) error {
-	dataDir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		return err
-	}
-	if err := os.Chmod(dataDir, 0o700); err != nil {
-		return err
-	}
-	if filepath.Base(dbPath) != databaseName+".sqlite" || filepath.Base(dataDir) != "data" {
-		return nil
-	}
-	root := filepath.Dir(dataDir)
-	if err := os.Chmod(root, 0o700); err != nil {
-		return err
-	}
-	ormDir := filepath.Join(root, "orm")
-	if err := os.MkdirAll(ormDir, 0o700); err != nil {
-		return err
-	}
-	return os.Chmod(ormDir, 0o700)
-}
-
-func writeORMFile(dbPath string) error {
-	dataDir := filepath.Dir(dbPath)
-	if filepath.Base(dbPath) != databaseName+".sqlite" || filepath.Base(dataDir) != "data" {
-		return nil
-	}
-	ormDir := filepath.Join(filepath.Dir(dataDir), "orm")
-	tmp, err := os.CreateTemp(ormDir, ".orm-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	ok := false
-	defer func() {
-		if !ok {
-			_ = os.Remove(tmpName)
-		}
-	}()
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if _, err := tmp.WriteString(ormText()); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, filepath.Join(ormDir, databaseName)); err != nil {
-		return err
-	}
-	ok = true
-	return nil
+	return sqlxMigrate(ormText())
 }
 
 func ormText() string {
 	return metaModel + "\n" + courseModel
-}
-
-func ormUpsertSQL() string {
-	models := []struct {
-		name string
-		body string
-		pos  int
-	}{
-		{"meta", metaModel, 0},
-		{"course", courseModel, 1},
-	}
-	var b strings.Builder
-	for _, model := range models {
-		fmt.Fprintf(&b, "INSERT INTO sqlx_orm(model, body, position) VALUES (%s, %s, %d) ON CONFLICT(model) DO UPDATE SET body = excluded.body, position = excluded.position;\n", sqlString(model.name), sqlString(model.body), model.pos)
-	}
-	return b.String()
 }
 
 func sqlString(value string) string {
@@ -497,7 +388,8 @@ func expandPath(path string) string {
 }
 
 func queryJSON(dbPath, sql string, dest any) error {
-	raw, err := run(dbPath, sql, "-json")
+	_ = dbPath
+	raw, err := sqlxCall(databaseName, "query", "--json", sql)
 	if err != nil {
 		return err
 	}
@@ -512,20 +404,37 @@ func queryJSON(dbPath, sql string, dest any) error {
 }
 
 func execSQL(dbPath, sql string) error {
-	_, err := run(dbPath, sql)
+	_ = dbPath
+	file, err := os.CreateTemp("", databaseName+"-sql-*")
+	if err != nil {
+		return err
+	}
+	sqlPath := file.Name()
+	defer os.Remove(sqlPath)
+	if _, err := file.WriteString(sql); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	_, err = sqlxCall(databaseName, "exec", "--file", sqlPath)
 	return err
 }
 
-func run(dbPath, sql string, flags ...string) (string, error) {
-	bin := os.Getenv("SQLX_SQLITE")
-	if bin == "" {
-		bin = "/usr/bin/sqlite3"
+func sqlxBin() string {
+	if bin := os.Getenv("SQLX_BIN"); bin != "" {
+		return bin
 	}
-	args := []string{"-batch", "-cmd", ".timeout 5000"}
-	args = append(args, flags...)
-	args = append(args, dbPath)
-	cmd := exec.Command(bin, args...)
-	cmd.Stdin = strings.NewReader(sql)
+	path, err := exec.LookPath("sqlx")
+	if err != nil {
+		return "sqlx"
+	}
+	return path
+}
+
+func sqlxCall(args ...string) (string, error) {
+	cmd := exec.Command(sqlxBin(), args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -540,4 +449,22 @@ func run(dbPath, sql string, flags ...string) (string, error) {
 		return stdout.String(), fmt.Errorf("%s", msg)
 	}
 	return stdout.String(), nil
+}
+
+func sqlxMigrate(body string) error {
+	file, err := os.CreateTemp("", databaseName+"-orm-*")
+	if err != nil {
+		return err
+	}
+	name := file.Name()
+	defer os.Remove(name)
+	if _, err := file.WriteString(body); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	_, err = sqlxCall(databaseName, "migrate", name)
+	return err
 }

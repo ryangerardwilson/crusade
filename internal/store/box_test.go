@@ -64,13 +64,17 @@ func TestOpenAdoptsXecuteDatabase(t *testing.T) {
 	t.Setenv("SQLX_ROOT", root)
 	t.Setenv("BOXES_CONFIG", filepath.Join(root, "missing-outline.txt"))
 	legacy := filepath.Join(root, "data", legacyDatabaseName+".sqlite")
-	event, err := model.NewDoEvent("2026-04-01 23:59:59", "kept task")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := Save(legacy, []Record{{ID: 7, Event: event}}); err != nil {
-		t.Fatal(err)
-	}
+	seedSQLiteFile(t, legacy, `CREATE TABLE task (
+  "id" INTEGER PRIMARY KEY,
+  "mode" TEXT NOT NULL,
+  "x" TEXT NOT NULL,
+  "y" TEXT NOT NULL,
+  "z" TEXT,
+  "done" INTEGER NOT NULL,
+  "done_at" TEXT
+);
+INSERT INTO task(id, mode, x, y, done) VALUES (7, 'do', '2026-04-01 23:59:59', 'kept task', 0);
+`)
 	db := DatabasePath()
 	if _, err := Open(db); err != nil {
 		t.Fatal(err)
@@ -88,8 +92,7 @@ func TestOpenAdoptsXecuteDatabase(t *testing.T) {
 }
 
 func TestLoadActiveDaysKeepsDaysWithACheck(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "crusade.sqlite")
-	t.Setenv("BOXES_CONFIG", "")
+	path := testDB(t)
 	if err := SaveDayChecks(path, "2026-10-18", map[string]bool{"move": true}); err != nil {
 		t.Fatal(err)
 	}

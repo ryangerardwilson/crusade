@@ -1,7 +1,6 @@
 package store
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,7 +9,7 @@ import (
 )
 
 func TestRepeatSeriesSkipOverrideSplitAndConflict(t *testing.T) {
-	db := filepath.Join(t.TempDir(), "crusade.sqlite")
+	db := testDB(t)
 	repeat, err := model.NewRepeat("standup", "2026-11-02 09:00:00", "2026-11-02 10:00:00", "Weekly")
 	if err != nil {
 		t.Fatal(err)
@@ -271,7 +270,7 @@ func assertRepeatRenamed(t *testing.T, db string, id int, old RepeatRecord) {
 }
 
 func TestMakeRepeatFromBlockNamesTheLaterConflict(t *testing.T) {
-	db := filepath.Join(t.TempDir(), "crusade.sqlite")
+	db := testDB(t)
 	block, err := model.NewBlock("meetup", "2026-11-03 19:00:00", "2026-11-03 21:00:00")
 	if err != nil {
 		t.Fatal(err)

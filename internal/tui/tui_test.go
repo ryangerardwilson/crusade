@@ -13,6 +13,13 @@ import (
 	"github.com/ryangerardwilson/crusade/internal/store"
 )
 
+func isolateSQLX(t *testing.T) {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv("SQLX_ROOT", root)
+	t.Setenv("BOXES_CONFIG", filepath.Join(root, "missing.txt"))
+}
+
 func TestAgendaRendersCheckboxList(t *testing.T) {
 	m := appModel{
 		view:         viewAgenda,
@@ -314,6 +321,7 @@ func forceStyledOutput(t *testing.T) {
 }
 
 func TestTitleDoesNotUsePulseAnimation(t *testing.T) {
+	isolateSQLX(t)
 	m := appModel{
 		view:       viewMonth,
 		width:      90,
@@ -493,6 +501,7 @@ func TestEscapeLeavesDoMonthTaskList(t *testing.T) {
 }
 
 func TestNewTaskOpensSharedYAMLAtSelectedDateAndReloads(t *testing.T) {
+	isolateSQLX(t)
 	path := filepath.Join(t.TempDir(), "tasks.yaml")
 	m := appModel{
 		dataPath:   path,
@@ -537,6 +546,7 @@ func TestNewTaskOpensSharedYAMLAtSelectedDateAndReloads(t *testing.T) {
 }
 
 func TestUnchangedNewTaskDraftIsRemovedAfterVim(t *testing.T) {
+	isolateSQLX(t)
 	path := filepath.Join(t.TempDir(), "tasks.yaml")
 	m := appModel{dataPath: path, view: viewMonth, monthDate: sampleDate(2026, time.August, 25), monthFocus: monthFocusGrid}
 
@@ -559,6 +569,7 @@ func TestUnchangedNewTaskDraftIsRemovedAfterVim(t *testing.T) {
 }
 
 func TestEditOpensSelectedStableIDInSharedYAML(t *testing.T) {
+	isolateSQLX(t)
 	path := filepath.Join(t.TempDir(), "tasks.yaml")
 	records := sampleRecords(t)
 	if err := store.Save(path, records); err != nil {
@@ -589,6 +600,7 @@ func TestEditOpensSelectedStableIDInSharedYAML(t *testing.T) {
 }
 
 func TestAppOpensInDoAgenda(t *testing.T) {
+	isolateSQLX(t)
 	m := newAppModel(filepath.Join(t.TempDir(), "tasks.yaml"), nil)
 	if m.mode != modeDo || m.view != viewAgenda {
 		t.Fatalf("mode=%q view=%q", m.mode, m.view)
@@ -596,6 +608,7 @@ func TestAppOpensInDoAgenda(t *testing.T) {
 }
 
 func TestDoModeAddsTaskForTodayOrSelectedMonthDay(t *testing.T) {
+	isolateSQLX(t)
 	path := filepath.Join(t.TempDir(), "tasks.yaml")
 	m := newAppModel(path, nil)
 	m.view = viewAgenda
@@ -638,6 +651,7 @@ func TestDoModeAddsTaskForTodayOrSelectedMonthDay(t *testing.T) {
 }
 
 func TestDoModeDoesNotOpenVim(t *testing.T) {
+	isolateSQLX(t)
 	path := filepath.Join(t.TempDir(), "tasks.yaml")
 	m := newAppModel(path, nil)
 	previous := openTaskEditor
@@ -759,6 +773,7 @@ func TestComposeCtrlDEditsInsteadOfSwitchingMode(t *testing.T) {
 }
 
 func TestModesKeepTheirOwnRecords(t *testing.T) {
+	isolateSQLX(t)
 	doEvent, err := model.NewDoEvent("2026-06-13 23:59:59", "mail the letter")
 	if err != nil {
 		t.Fatal(err)
@@ -814,6 +829,7 @@ func TestDoMonthNewTaskKeepsCalendarPut(t *testing.T) {
 }
 
 func TestDoRescheduleChangesDate(t *testing.T) {
+	isolateSQLX(t)
 	path := filepath.Join(t.TempDir(), "tasks.yaml")
 	records := sampleDoRecords(t)
 	if err := store.Save(path, records); err != nil {
@@ -892,6 +908,7 @@ func TestDoRescheduleNeedsATask(t *testing.T) {
 }
 
 func TestDoRescheduleRejectsBadDate(t *testing.T) {
+	isolateSQLX(t)
 	path := filepath.Join(t.TempDir(), "tasks.yaml")
 	records := sampleDoRecords(t)
 	if err := store.Save(path, records); err != nil {
@@ -1073,6 +1090,7 @@ func TestTabCyclesDoAlignAndBox(t *testing.T) {
 }
 
 func TestRememberModeWritesTheLaunchMode(t *testing.T) {
+	isolateSQLX(t)
 	path := filepath.Join(t.TempDir(), "crusade.sqlite")
 	t.Setenv("BOXES_CONFIG", "")
 	rememberMode(path, model.ModeBox)
@@ -1088,6 +1106,8 @@ func TestRememberModeWritesTheLaunchMode(t *testing.T) {
 }
 
 func TestTabToBoxStaysInAlignWhenTheDatabaseCannotOpen(t *testing.T) {
+	isolateSQLX(t)
+	t.Setenv("SQLX_SQLITE", "/bin/false")
 	m := newAppModel(t.TempDir(), nil)
 	m.mode = modeAlign
 	next, cmd := m.cycleMode()
@@ -1197,6 +1217,7 @@ func TestTabRestoresEachMode(t *testing.T) {
 }
 
 func TestTabStaysInCompose(t *testing.T) {
+	isolateSQLX(t)
 	m := newAppModel(filepath.Join(t.TempDir(), "tasks.sqlite"), nil)
 	m.composing = true
 	m.composeText = "hello"
@@ -1209,6 +1230,7 @@ func TestTabStaysInCompose(t *testing.T) {
 }
 
 func TestDoneThisWeekStartsOnMonday(t *testing.T) {
+	isolateSQLX(t)
 	monday := sampleDate(2026, time.June, 15)
 	wednesday := sampleDate(2026, time.June, 17)
 	sunday := time.Date(2026, time.June, 21, 23, 59, 59, 0, time.Local)
@@ -1237,6 +1259,7 @@ func TestDoneThisWeekStartsOnMonday(t *testing.T) {
 }
 
 func TestDoModeShowsDoneThisWeek(t *testing.T) {
+	isolateSQLX(t)
 	now := time.Now()
 	monday := mondayOf(now)
 	records := []store.Record{

@@ -34,95 +34,14 @@ const metaModel = "model meta\n" +
 	"  key text not null\n" +
 	"  value text\n"
 
-const createBox = `CREATE TABLE IF NOT EXISTS box (
-  "id" INTEGER PRIMARY KEY,
-  "path" TEXT NOT NULL,
-  "label" TEXT NOT NULL,
-  "parent_path" TEXT NOT NULL,
-  "position" INTEGER NOT NULL,
-  "depth" INTEGER NOT NULL
-)`
-
-const createBoxCheck = `CREATE TABLE IF NOT EXISTS box_check (
-  "id" INTEGER PRIMARY KEY,
-  "day" TEXT NOT NULL,
-  "path" TEXT NOT NULL
-)`
-
-const createMeta = `CREATE TABLE IF NOT EXISTS meta (
-  "id" INTEGER PRIMARY KEY,
-  "key" TEXT NOT NULL,
-  "value" TEXT
-)`
-
 func ormText() string {
 	return taskModel + "\n" + boxModel + "\n" + boxCheckModel + "\n" + metaModel + "\n" + blockModel + "\n" + repeatModel + "\n" + repeatChangeModel + "\n" + deletionModel
 }
 
-func ormUpsertSQL() string {
-	models := []struct {
-		name string
-		body string
-		pos  int
-	}{
-		{"task", taskModel, 0},
-		{"box", boxModel, 1},
-		{"box_check", boxCheckModel, 2},
-		{"meta", metaModel, 3},
-		{"block", blockModel, 4},
-		{"repeat", repeatModel, 5},
-		{"repeat_change", repeatChangeModel, 6},
-		{"deletion", deletionModel, 7},
-	}
-	var b strings.Builder
-	for _, model := range models {
-		fmt.Fprintf(&b, "INSERT INTO sqlx_orm(model, body, position) VALUES (%s, %s, %d) ON CONFLICT(model) DO UPDATE SET body = excluded.body, position = excluded.position;\n", sqlString(model.name), sqlString(model.body), model.pos)
-	}
-	return b.String()
-}
-
 func adoptLegacyDatabase(dbPath string) error {
-	if filepath.Base(dbPath) != DatabaseName+".sqlite" {
-		return nil
-	}
-	if _, err := os.Stat(dbPath); err == nil {
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	legacy := filepath.Join(filepath.Dir(dbPath), legacyDatabaseName+".sqlite")
-	if _, err := os.Stat(legacy); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		from := legacy + suffix
-		if _, err := os.Stat(from); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return err
-		}
-		if err := os.Rename(from, dbPath+suffix); err != nil {
-			return err
-		}
-	}
-	dataDir := filepath.Dir(dbPath)
-	if filepath.Base(dataDir) != "data" {
-		return nil
-	}
-	ormDir := filepath.Join(filepath.Dir(dataDir), "orm")
-	from := filepath.Join(ormDir, legacyDatabaseName)
-	to := filepath.Join(ormDir, DatabaseName)
-	if _, err := os.Stat(from); err != nil {
-		return nil
-	}
-	if _, err := os.Stat(to); err == nil {
-		return nil
-	}
-	return os.Rename(from, to)
+	_ = dbPath
+	_, err := sqlxCall("rename", "database", legacyDatabaseName, DatabaseName)
+	return err
 }
 
 func importBoxesOnce(dbPath string) error {

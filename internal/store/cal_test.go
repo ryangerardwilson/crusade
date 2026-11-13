@@ -110,9 +110,6 @@ func TestBlocksRoundTripApartFromDoTasks(t *testing.T) {
 }
 
 func TestMeetingURLMigratesAndRoundTrips(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "crusade.sqlite")
-	t.Setenv("BOXES_CONFIG", "")
 	old := `CREATE TABLE block (
   id INTEGER PRIMARY KEY,
   title TEXT NOT NULL,
@@ -140,9 +137,7 @@ CREATE TABLE repeat_change (
 );
 INSERT INTO repeat_change(id, repeat_id, day, skipped, title, start_at, end_at) VALUES (1, 1, '2026-11-09', 0, 'interview', '2026-11-09 11:00:00', '2026-11-09 11:15:00');
 `
-	if err := execSQL(path, old); err != nil {
-		t.Fatal(err)
-	}
+	path := seedSQLite(t, old)
 	if _, err := Open(path); err != nil {
 		t.Fatal(err)
 	}

@@ -3,7 +3,6 @@ package store
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -26,16 +25,16 @@ const taskModel = "model task\n" +
 	"  x text not null\n" +
 	"  y text not null\n" +
 	"  z text\n" +
-	"  done integer not null\n" +
+	"  done integer not null default 0\n" +
 	"  done_at text\n"
 
-const createORM = `CREATE TABLE IF NOT EXISTS sqlx_orm (
-  model TEXT PRIMARY KEY,
-  body TEXT NOT NULL,
-  position INTEGER NOT NULL
-)`
+const deletionModel = "model deletion\n" +
+	"  id integer primary key\n" +
+	"  deleted_at text not null\n"
 
-const createTask = `CREATE TABLE IF NOT EXISTS task (
+const dropTaskScoresSQL = `
+BEGIN IMMEDIATE;
+CREATE TABLE task_scoreless (
   "id" INTEGER PRIMARY KEY,
   "mode" TEXT NOT NULL,
   "x" TEXT NOT NULL,
@@ -43,16 +42,34 @@ const createTask = `CREATE TABLE IF NOT EXISTS task (
   "z" TEXT,
   "done" INTEGER NOT NULL,
   "done_at" TEXT
-)`
-
-const deletionModel = "model deletion\n" +
-	"  id integer primary key\n" +
-	"  deleted_at text not null\n"
-
-const createDeletion = `CREATE TABLE IF NOT EXISTS deletion (
-  "id" INTEGER PRIMARY KEY,
-  "deleted_at" TEXT NOT NULL
-)`
+);
+INSERT INTO task_scoreless(id, mode, x, y, z, done, done_at)
+SELECT
+  id,
+  CASE
+    WHEN TRIM(COALESCE(mode, '')) = '' AND z = 'done' AND COALESCE(p, 0) = 0 AND COALESCE(q, 0) = 0 AND COALESCE(r, 0) = 0 THEN 'do'
+    WHEN LOWER(TRIM(mode)) = 'think' THEN 'align'
+    WHEN TRIM(COALESCE(mode, '')) = '' THEN 'align'
+    ELSE mode
+  END,
+  CASE
+    WHEN NOT (TRIM(COALESCE(mode, '')) = '' AND z = 'done' AND COALESCE(p, 0) = 0 AND COALESCE(q, 0) = 0 AND COALESCE(r, 0) = 0)
+      AND LOWER(TRIM(COALESCE(mode, ''))) IN ('', 'align', 'think')
+    THEN substr(x, 1, 10)
+    ELSE x
+  END,
+  y,
+  CASE
+    WHEN TRIM(COALESCE(mode, '')) = '' AND z = 'done' AND COALESCE(p, 0) = 0 AND COALESCE(q, 0) = 0 AND COALESCE(r, 0) = 0 THEN NULL
+    ELSE z
+  END,
+  COALESCE(done, 0),
+  done_at
+FROM task;
+DROP TABLE task;
+ALTER TABLE task_scoreless RENAME TO task;
+COMMIT;
+`
 
 type Record struct {
 	ID    int
@@ -87,25 +104,23 @@ func Open(dbPath string) (bool, error) {
 	if err := adoptLegacyDatabase(dbPath); err != nil {
 		return false, err
 	}
-	created := false
-	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
-		created = true
-	} else if err != nil {
+	existed, err := databaseListed(DatabaseName)
+	if err != nil {
 		return false, err
 	}
 	if err := ensure(dbPath); err != nil {
-		if created {
-			removeDB(dbPath)
+		if !existed {
+			_, _ = sqlxCall("drop", "database", DatabaseName)
 		}
 		return false, err
 	}
 	if err := importBoxesOnce(dbPath); err != nil {
-		if created {
-			removeDB(dbPath)
+		if !existed {
+			_, _ = sqlxCall("drop", "database", DatabaseName)
 		}
 		return false, err
 	}
-	return created, nil
+	return !existed, nil
 }
 
 func Load(dbPath string) ([]Record, error) {
@@ -249,14 +264,11 @@ func DeletedThisWeek(dbPath string, now time.Time) (int, error) {
 	if strings.TrimSpace(dbPath) == "" {
 		return 0, nil
 	}
-	info, err := os.Stat(dbPath)
+	exists, err := databaseListed(DatabaseName)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return 0, nil
-		}
 		return 0, err
 	}
-	if info.IsDir() {
+	if !exists {
 		return 0, nil
 	}
 	if err := ensure(dbPath); err != nil {
@@ -302,188 +314,56 @@ func weekStart(now time.Time) time.Time {
 }
 
 func ensure(dbPath string) error {
-	if err := prepareDirs(dbPath); err != nil {
+	_ = dbPath
+	if _, err := sqlxCall("create", "database", DatabaseName); err != nil {
 		return err
 	}
-	sql := "PRAGMA journal_mode=WAL;\n" + createORM + ";\n" + createTask + ";\n" + createBox + ";\n" + createBoxCheck + ";\n" + createMeta + ";\n" + createBlock + ";\n" + createRepeat + ";\n" + createRepeatChange + ";\n" + createDeletion + ";\n" + ormUpsertSQL()
-	if err := execSQL(dbPath, sql); err != nil {
+	if err := migrateLegacyTask(); err != nil {
 		return err
 	}
-	if err := ensureTaskDoneColumn(dbPath); err != nil {
-		return err
-	}
-	if err := ensureTaskDoneAtColumn(dbPath); err != nil {
-		return err
-	}
-	if err := ensureTaskDropsScores(dbPath); err != nil {
-		return err
-	}
-	if err := ensureTextColumn(dbPath, "block", "url"); err != nil {
-		return err
-	}
-	if err := ensureTextColumn(dbPath, "repeat", "url"); err != nil {
-		return err
-	}
-	if err := ensureTextColumn(dbPath, "repeat_change", "url"); err != nil {
-		return err
-	}
-	if err := os.Chmod(dbPath, 0o600); err != nil {
-		return err
-	}
-	return writeORMFile(dbPath)
+	return sqlxMigrate(ormText())
 }
 
-func ensureTaskDoneColumn(dbPath string) error {
-	var rows []struct {
-		Name string `json:"name"`
-	}
-	if err := queryJSON(dbPath, "SELECT name FROM pragma_table_info('task') WHERE name = 'done'", &rows); err != nil {
-		return err
-	}
-	if len(rows) > 0 {
-		return nil
-	}
-	return execSQL(dbPath, "ALTER TABLE task ADD COLUMN done INTEGER NOT NULL DEFAULT 0;")
-}
-
-func ensureTaskDropsScores(dbPath string) error {
-	var rows []struct {
-		Name string `json:"name"`
-	}
-	if err := queryJSON(dbPath, "SELECT name FROM pragma_table_info('task') WHERE name = 'p'", &rows); err != nil {
-		return err
-	}
-	if len(rows) == 0 {
-		return nil
-	}
-	return execSQL(dbPath, `
-BEGIN IMMEDIATE;
-CREATE TABLE task_scoreless (
-  "id" INTEGER PRIMARY KEY,
-  "mode" TEXT NOT NULL,
-  "x" TEXT NOT NULL,
-  "y" TEXT NOT NULL,
-  "z" TEXT,
-  "done" INTEGER NOT NULL,
-  "done_at" TEXT
-);
-INSERT INTO task_scoreless(id, mode, x, y, z, done, done_at)
-SELECT
-  id,
-  CASE
-    WHEN TRIM(COALESCE(mode, '')) = '' AND z = 'done' AND COALESCE(p, 0) = 0 AND COALESCE(q, 0) = 0 AND COALESCE(r, 0) = 0 THEN 'do'
-    WHEN LOWER(TRIM(mode)) = 'think' THEN 'align'
-    WHEN TRIM(COALESCE(mode, '')) = '' THEN 'align'
-    ELSE mode
-  END,
-  CASE
-    WHEN NOT (TRIM(COALESCE(mode, '')) = '' AND z = 'done' AND COALESCE(p, 0) = 0 AND COALESCE(q, 0) = 0 AND COALESCE(r, 0) = 0)
-      AND LOWER(TRIM(COALESCE(mode, ''))) IN ('', 'align', 'think')
-    THEN substr(x, 1, 10)
-    ELSE x
-  END,
-  y,
-  CASE
-    WHEN TRIM(COALESCE(mode, '')) = '' AND z = 'done' AND COALESCE(p, 0) = 0 AND COALESCE(q, 0) = 0 AND COALESCE(r, 0) = 0 THEN NULL
-    ELSE z
-  END,
-  COALESCE(done, 0),
-  done_at
-FROM task;
-DROP TABLE task;
-ALTER TABLE task_scoreless RENAME TO task;
-COMMIT;
-`)
-}
-
-func ensureTaskDoneAtColumn(dbPath string) error {
-	var rows []struct {
-		Name string `json:"name"`
-	}
-	if err := queryJSON(dbPath, "SELECT name FROM pragma_table_info('task') WHERE name = 'done_at'", &rows); err != nil {
-		return err
-	}
-	if len(rows) > 0 {
-		return nil
-	}
-	return execSQL(dbPath, "ALTER TABLE task ADD COLUMN done_at TEXT;")
-}
-
-func ensureTextColumn(dbPath, table, column string) error {
-	var rows []struct {
-		Name string `json:"name"`
-	}
-	query := fmt.Sprintf("SELECT name FROM pragma_table_info('%s') WHERE name = '%s'", table, column)
-	if err := queryJSON(dbPath, query, &rows); err != nil {
-		return err
-	}
-	if len(rows) > 0 {
-		return nil
-	}
-	return execSQL(dbPath, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s TEXT;", table, column))
-}
-
-func prepareDirs(dbPath string) error {
-	dataDir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		return err
-	}
-	if err := os.Chmod(dataDir, 0o700); err != nil {
-		return err
-	}
-	if filepath.Base(dbPath) != DatabaseName+".sqlite" || filepath.Base(dataDir) != "data" {
-		return nil
-	}
-	root := filepath.Dir(dataDir)
-	if err := os.Chmod(root, 0o700); err != nil {
-		return err
-	}
-	ormDir := filepath.Join(root, "orm")
-	if err := os.MkdirAll(ormDir, 0o700); err != nil {
-		return err
-	}
-	return os.Chmod(ormDir, 0o700)
-}
-
-func writeORMFile(dbPath string) error {
-	dataDir := filepath.Dir(dbPath)
-	if filepath.Base(dbPath) != DatabaseName+".sqlite" || filepath.Base(dataDir) != "data" {
-		return nil
-	}
-	ormDir := filepath.Join(filepath.Dir(dataDir), "orm")
-	tmp, err := os.CreateTemp(ormDir, ".orm-*")
+func migrateLegacyTask() error {
+	raw, err := sqlxCall(DatabaseName, "columns", "task")
 	if err != nil {
 		return err
 	}
-	tmpName := tmp.Name()
-	ok := false
-	defer func() {
-		if !ok {
-			_ = os.Remove(tmpName)
+	cols := map[string]bool{}
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			cols[line] = true
 		}
-	}()
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return err
 	}
-	if _, err := tmp.WriteString(ormText()); err != nil {
-		_ = tmp.Close()
-		return err
+	if !cols["p"] {
+		return nil
 	}
-	if err := tmp.Close(); err != nil {
-		return err
+	if !cols["done"] {
+		if _, err := sqlxCall(DatabaseName, "once", "task_done", "ALTER TABLE task ADD COLUMN done INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
 	}
-	if err := os.Rename(tmpName, filepath.Join(ormDir, DatabaseName)); err != nil {
-		return err
+	if !cols["done_at"] {
+		if _, err := sqlxCall(DatabaseName, "once", "task_done_at", "ALTER TABLE task ADD COLUMN done_at TEXT"); err != nil {
+			return err
+		}
 	}
-	ok = true
-	return nil
+	_, err = sqlxCall(DatabaseName, "once", "task_drop_scores", dropTaskScoresSQL)
+	return err
 }
 
-func removeDB(path string) {
-	_ = os.Remove(path)
-	_ = os.Remove(path + "-wal")
-	_ = os.Remove(path + "-shm")
+func databaseListed(name string) (bool, error) {
+	raw, err := sqlxCall("list", "databases")
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(raw, "\n") {
+		if strings.TrimSpace(line) == name {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func normalizeRecords(records []Record) ([]Record, error) {
@@ -696,7 +576,8 @@ func rowsChanged(dbPath, sql string) (bool, error) {
 }
 
 func queryJSON(dbPath, sql string, dest any) error {
-	raw, err := run(dbPath, sql, "-json")
+	_ = dbPath
+	raw, err := sqlxCall(DatabaseName, "query", "--json", sql)
 	if err != nil {
 		return err
 	}
@@ -711,19 +592,37 @@ func queryJSON(dbPath, sql string, dest any) error {
 }
 
 func execSQL(dbPath, sql string) error {
-	_, err := run(dbPath, sql)
+	_ = dbPath
+	file, err := os.CreateTemp("", DatabaseName+"-sql-*")
+	if err != nil {
+		return err
+	}
+	sqlPath := file.Name()
+	defer os.Remove(sqlPath)
+	if _, err := file.WriteString(sql); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	_, err = sqlxCall(DatabaseName, "exec", "--file", sqlPath)
 	return err
 }
 
-func run(dbPath, sql string, flags ...string) (string, error) {
-	bin := os.Getenv("SQLX_SQLITE")
-	if bin == "" {
-		bin = "/usr/bin/sqlite3"
+func sqlxBin() string {
+	if bin := os.Getenv("SQLX_BIN"); bin != "" {
+		return bin
 	}
-	args := []string{"-batch", "-cmd", ".timeout 5000"}
-	args = append(args, flags...)
-	args = append(args, dbPath, sql)
-	cmd := exec.Command(bin, args...)
+	path, err := exec.LookPath("sqlx")
+	if err != nil {
+		return "sqlx"
+	}
+	return path
+}
+
+func sqlxCall(args ...string) (string, error) {
+	cmd := exec.Command(sqlxBin(), args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -738,4 +637,22 @@ func run(dbPath, sql string, flags ...string) (string, error) {
 		return stdout.String(), fmt.Errorf("%s", msg)
 	}
 	return stdout.String(), nil
+}
+
+func sqlxMigrate(body string) error {
+	file, err := os.CreateTemp("", DatabaseName+"-orm-*")
+	if err != nil {
+		return err
+	}
+	name := file.Name()
+	defer os.Remove(name)
+	if _, err := file.WriteString(body); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	_, err = sqlxCall(DatabaseName, "migrate", name)
+	return err
 }

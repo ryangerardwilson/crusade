@@ -28,27 +28,6 @@ const repeatChangeModel = "model repeat_change\n" +
 	"  end_at text\n" +
 	"  url text\n"
 
-const createRepeat = `CREATE TABLE IF NOT EXISTS repeat (
-  "id" INTEGER PRIMARY KEY,
-  "title" TEXT NOT NULL,
-  "start_at" TEXT NOT NULL,
-  "end_at" TEXT NOT NULL,
-  "freq" TEXT NOT NULL,
-  "until_on" TEXT,
-  "url" TEXT
-)`
-
-const createRepeatChange = `CREATE TABLE IF NOT EXISTS repeat_change (
-  "id" INTEGER PRIMARY KEY,
-  "repeat_id" INTEGER NOT NULL,
-  "day" TEXT NOT NULL,
-  "skipped" INTEGER NOT NULL,
-  "title" TEXT,
-  "start_at" TEXT,
-  "end_at" TEXT,
-  "url" TEXT
-)`
-
 const repeatHorizonDays = 366
 
 // RepeatRecord is one recurring block. It is not a do task.

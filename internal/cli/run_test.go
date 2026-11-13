@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ryangerardwilson/crusade/internal/config"
+	"github.com/ryangerardwilson/crusade/internal/dofile"
 	"github.com/ryangerardwilson/crusade/internal/model"
 	"github.com/ryangerardwilson/crusade/internal/store"
 	"github.com/ryangerardwilson/crusade/internal/tui"
@@ -443,14 +444,17 @@ func TestDoModeOpensTheListFile(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
 	t.Setenv("SQLX_ROOT", filepath.Join(home, "sqlx"))
 	t.Setenv("BOXES_CONFIG", filepath.Join(home, "missing-outline.txt"))
-	t.Setenv("VISUAL", "")
+	t.Setenv("VISUAL", "nvim")
+	t.Setenv("EDITOR", "nvim")
 	logPath := filepath.Join(home, "editor.log")
 	editor := filepath.Join(home, "editor")
 	script := "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '" + logPath + "'\n"
 	if err := os.WriteFile(editor, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("EDITOR", editor)
+	previous := dofile.VimArgs
+	dofile.VimArgs = []string{editor}
+	t.Cleanup(func() { dofile.VimArgs = previous })
 	if code := Run([]string{"-m", "do", "-c", "mail the letter"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
 		t.Fatal(code)
 	}

@@ -59,7 +59,7 @@ func seedText(dataPath string) (string, error) {
 	return strings.Join(lines, "\n") + "\n", nil
 }
 
-// Open ensures the list and edits it with $VISUAL, $EDITOR, or vim.
+// Open ensures the list and edits it with vim.
 func Open(dataPath string) error {
 	if err := Ensure(dataPath); err != nil {
 		return err
@@ -76,17 +76,12 @@ func runEditor(path string) error {
 	return cmd.Run()
 }
 
+// VimArgs is the command that opens the do list. Do mode uses vim.
+var VimArgs = []string{"vim"}
+
 func editorCommand() []string {
-	editor := os.Getenv("VISUAL")
-	if editor == "" {
-		editor = os.Getenv("EDITOR")
-	}
-	if editor == "" {
-		editor = "vim"
-	}
-	parts := strings.Fields(editor)
-	if len(parts) == 0 {
+	if len(VimArgs) == 0 {
 		return []string{"vim"}
 	}
-	return parts
+	return append([]string(nil), VimArgs...)
 }

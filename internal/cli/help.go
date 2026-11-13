@@ -19,7 +19,7 @@ open a mode:
     The order is do, cal, box, nlp, align.
     Leaving a mode returns to the menu. Esc on the menu quits.
   crusade -m do
-    open the do list in $VISUAL, $EDITOR, or vim
+    open the do list in vim
   crusade -m align
   crusade -m box
   crusade -m cal

@@ -63,14 +63,17 @@ func TestOpenUsesTheEditor(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
 	t.Setenv("SQLX_ROOT", filepath.Join(home, "sqlx"))
 	t.Setenv("BOXES_CONFIG", filepath.Join(home, "missing-outline.txt"))
-	t.Setenv("VISUAL", "")
+	t.Setenv("VISUAL", "nvim")
+	t.Setenv("EDITOR", "omarchy-launch-editor --inline")
 	logPath := filepath.Join(home, "opened")
 	editor := filepath.Join(home, "editor")
 	script := "#!/bin/sh\nprintf '%s\\n' \"$1\" > '" + logPath + "'\n"
 	if err := os.WriteFile(editor, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("EDITOR", editor)
+	previous := VimArgs
+	VimArgs = []string{editor}
+	t.Cleanup(func() { VimArgs = previous })
 	db := filepath.Join(home, "crusade.sqlite")
 	if err := Open(db); err != nil {
 		t.Fatal(err)
@@ -85,5 +88,14 @@ func TestOpenUsesTheEditor(t *testing.T) {
 	info, err := os.Stat(Path())
 	if err != nil || info.Size() != 0 {
 		t.Fatalf("empty list stat=%v err=%v", info, err)
+	}
+}
+
+func TestEditorCommandIsVim(t *testing.T) {
+	t.Setenv("VISUAL", "nvim")
+	t.Setenv("EDITOR", "omarchy-launch-editor --inline")
+	got := editorCommand()
+	if len(got) != 1 || got[0] != "vim" {
+		t.Fatalf("command = %#v", got)
 	}
 }

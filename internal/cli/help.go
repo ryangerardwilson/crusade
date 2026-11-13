@@ -14,15 +14,19 @@ global actions:
     open config in $VISUAL/$EDITOR
 
 open a mode:
+  crusade open
+    show the radial menu. The last mode starts selected.
   crusade -m do
+    open the do list in $VISUAL, $EDITOR, or vim
   crusade -m align
   crusade -m box
   crusade -m cal
   crusade -m nlp
-  crusade open
-    resume the last mode, or do when none is saved
 
-  In the TUI, tab cycles do, align, box, cal, and nlp. ? toggles a shortcuts modal.
+  The do list is $XDG_CONFIG_HOME/xyz/do, or ~/.config/xyz/do.
+  The first open lists each do outcome on its own line.
+  Later opens keep the file as you left it.
+  In the TUI, tab cycles align, box, cal, and nlp. ? toggles a shortcuts modal.
   Align is a list. Cal blocks time on an hour grid and has no -c, -r, -u, or -d. The week is an hour sheet sized to the screen. The focus box shows the block under the cursor. o opens its meeting link in the browser. From the Super+C window, that also closes crusade. j and k move one hour at a time. A block starts and ends on the hour. v selects a span. n and e open a form for the title, the start, the end, an optional meeting url, and the repeat. days repeats on chosen weekdays. On a repeat, the form applies to this event, this and following, or all events. d uses o, f, and a the same way.
 
   explain the x/y/z fields

@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/ryangerardwilson/crusade/internal/config"
+	"github.com/ryangerardwilson/crusade/internal/dofile"
 	"github.com/ryangerardwilson/crusade/internal/model"
+	"github.com/ryangerardwilson/crusade/internal/radial"
 	"github.com/ryangerardwilson/crusade/internal/store"
 	"github.com/ryangerardwilson/crusade/internal/tui"
 	"github.com/ryangerardwilson/crusade/internal/version"
@@ -38,6 +40,52 @@ func Run(args []string, stdout, stderr io.Writer) int {
 }
 
 var runTUI = tui.Run
+var pickMode = radial.Pick
+var openDoFile = dofile.Open
+
+func openRadial(dbPath string, stdout, stderr io.Writer) int {
+	preferred, err := store.LastMode(dbPath)
+	if err != nil {
+		fmt.Fprintln(stdout, err)
+		return 1
+	}
+	chosen, err := pickMode(preferred)
+	if err != nil {
+		fmt.Fprintln(stdout, err)
+		return 1
+	}
+	if chosen == "" {
+		return 0
+	}
+	return launchChosen(dbPath, chosen, stdout, stderr)
+}
+
+func launchChosen(dbPath, mode string, stdout, stderr io.Writer) int {
+	switch mode {
+	case model.ModeDo:
+		return openDo(dbPath, stdout)
+	case model.ModeAlign, model.ModeBox, model.ModeCal, model.ModeNLP:
+		return runTUI(dbPath, mode, stdout, stderr)
+	default:
+		fmt.Fprintln(stdout, "Unknown mode.")
+		return 1
+	}
+}
+
+func openDo(dataPath string, stdout io.Writer) int {
+	if err := store.SaveLastMode(dataPath, model.ModeDo); err != nil {
+		fmt.Fprintln(stdout, err)
+		return 1
+	}
+	if err := openDoFile(dataPath); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return exitErr.ExitCode()
+		}
+		fmt.Fprintln(stdout, err)
+		return 1
+	}
+	return 0
+}
 
 func dispatch(args []string, stdout, stderr io.Writer) int {
 	if _, err := config.Load(); err != nil {
@@ -59,12 +107,7 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 
 	switch {
 	case sameArgs(args, "open"):
-		mode, err := store.LastMode(dbPath)
-		if err != nil {
-			fmt.Fprintln(stdout, err)
-			return 1
-		}
-		return runTUI(dbPath, mode, stdout, stderr)
+		return openRadial(dbPath, stdout, stderr)
 	case len(args) > 0 && args[0] == "open":
 		fmt.Fprintln(stdout, "Usage: crusade open")
 		return 1
@@ -86,7 +129,10 @@ func runCRUD(dataPath string, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if op == "" {
-		return tui.Run(dataPath, mode, stdout, stderr)
+		if mode == model.ModeDo {
+			return openDo(dataPath, stdout)
+		}
+		return runTUI(dataPath, mode, stdout, stderr)
 	}
 	switch mode {
 	case model.ModeDo:

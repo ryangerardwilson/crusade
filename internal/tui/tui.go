@@ -1060,7 +1060,7 @@ func (m appModel) doPrompt() string {
 
 func (m appModel) helpGeneral() []helpItem {
 	items := []helpItem{
-		{key: "tab", description: "Do / align / box / cal / nlp"},
+		{key: "tab", description: "Align / box / cal / nlp"},
 	}
 	if m.mode != modeAlign {
 		items = append(items, helpItem{key: "a", description: "Agenda / month"})
@@ -1093,7 +1093,7 @@ func (m appModel) helpFooter() string {
 			mutedStyle.Render("n adds a task for today, or for the selected day in the open month"),
 			mutedStyle.Render("e edits the text · r reschedules the selected task"),
 			mutedStyle.Render("While typing: ctrl+a/e/b/f/h/d, alt+b/f"),
-			mutedStyle.Render("tab cycles do, align, box, cal, and nlp"),
+			mutedStyle.Render("tab cycles align, box, cal, and nlp"),
 		)
 	}
 	lines := []string{
@@ -1104,7 +1104,7 @@ func (m appModel) helpFooter() string {
 	if m.mode == modeAlign {
 		lines = append(lines, mutedStyle.Render("Align is a list"))
 	}
-	lines = append(lines, mutedStyle.Render("tab cycles do, align, box, cal, and nlp"))
+	lines = append(lines, mutedStyle.Render("tab cycles align, box, cal, and nlp"))
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 

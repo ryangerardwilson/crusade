@@ -24,7 +24,7 @@ Sessions stay in the sqlx database nlp.
 Each session is one page and opens into touch typing.
 n creates a session, then vim edits its text. e opens the selected session in vim. ,rn renames it. dd deletes it.
 ? lists the shortcuts on the session list. During touch typing, ? is typed.
-Tab leaves this mode, except while a session is being named or typed. q quits.
+Tab returns to align, except while a session is being named or typed. q quits.
 `
 
 func stdoutIsTerm(w io.Writer) bool {
@@ -137,14 +137,16 @@ func (m nlpMode) cycleMode() (tea.Model, tea.Cmd) {
 	next.width = m.width
 	next.height = m.height
 	next.memory = mem
-	if mem.hasDo {
-		next.restoreSession(mem.do)
+	next.mode = modeAlign
+	next.pendingDelete = false
+	if mem.hasAlign {
+		next.restoreSession(mem.align)
+		next.view = viewAgenda
 	}
 	next.clampState()
-	rememberMode(m.dataPath, model.ModeDo)
+	rememberMode(m.dataPath, model.ModeAlign)
 	return next, nil
 }
-
 func openNLPMode(dataPath string, width, height int, memory modeMemory) (nlpMode, error) {
 	if memory.hasNlp && memory.nlp != nil {
 		next := *memory.nlp

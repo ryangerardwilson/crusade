@@ -200,7 +200,7 @@ func (m boxModel) helpModal() string {
 		{key: "e", description: "Edit text"},
 		{key: "dd", description: "Delete"},
 		{key: "r", description: "Reset the day"},
-		{key: "tab", description: "Do / align / box / cal / nlp"},
+		{key: "tab", description: "Align / box / cal / nlp"},
 		{key: "? / esc", description: "Close this guide"},
 		{key: "q", description: "Quit"},
 	}

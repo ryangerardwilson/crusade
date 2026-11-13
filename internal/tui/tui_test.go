@@ -1063,16 +1063,12 @@ func TestTabCyclesDoAlignAndBox(t *testing.T) {
 		t.Fatalf("last mode after nlp = %q err=%v", mode, err)
 	}
 	next, cmd = practice.Update(tab)
-	do, ok := next.(appModel)
-	if !ok || cmd != nil || do.mode != modeDo || do.width != 60 {
-		t.Fatalf("do mode=%q width=%d type=%T cmd=%v", do.mode, do.width, next, cmd != nil)
+	align, ok = next.(appModel)
+	if !ok || cmd != nil || align.mode != modeAlign || align.width != 60 || !strings.Contains(align.View(), "ALIGN") {
+		t.Fatalf("return align mode=%q width=%d type=%T cmd=%v", align.mode, align.width, next, cmd != nil)
 	}
-	doView := do.View()
-	if !strings.Contains(doView, "DO") || !strings.Contains(doView, "mail the letter") || strings.Contains(doView, "ship the patch") {
-		t.Fatalf("do view:\n%s", doView)
-	}
-	if mode, err := store.LastMode(path); err != nil || mode != model.ModeDo {
-		t.Fatalf("last mode after do = %q err=%v", mode, err)
+	if mode, err := store.LastMode(path); err != nil || mode != model.ModeAlign {
+		t.Fatalf("last mode after align return = %q err=%v", mode, err)
 	}
 }
 
@@ -1177,12 +1173,6 @@ func TestTabRestoresEachMode(t *testing.T) {
 		t.Fatalf("nlp type=%T", next)
 	}
 	next, cmd = practice.Update(tab)
-	do, ok := next.(appModel)
-	if !ok || cmd != nil || do.mode != modeDo || do.view != viewMonth || do.monthDate.Format(time.DateOnly) != "2026-04-02" || do.agendaCursor != 1 || do.status != "do place" || !do.showHelp {
-		t.Fatalf("restored do mode=%s view=%s date=%s cursor=%d status=%q help=%v", do.mode, do.view, do.monthDate.Format(time.DateOnly), do.agendaCursor, do.status, do.showHelp)
-	}
-
-	next, cmd = do.Update(tab)
 	align, ok = next.(appModel)
 	if !ok || cmd != nil || align.mode != modeAlign || align.view != viewAgenda || align.monthDate.Format(time.DateOnly) != "2026-08-09" || align.agendaCursor != 1 || align.status != "align place" || !align.showHelp {
 		t.Fatalf("restored align mode=%s view=%s date=%s cursor=%d status=%q help=%v", align.mode, align.view, align.monthDate.Format(time.DateOnly), align.agendaCursor, align.status, align.showHelp)

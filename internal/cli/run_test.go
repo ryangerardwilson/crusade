@@ -27,7 +27,7 @@ func TestNoArgsMatchesHelp(t *testing.T) {
 	if noArgs.String() != help.String() {
 		t.Fatalf("no args output differed from help")
 	}
-	if !strings.Contains(help.String(), "open a mode:") || !strings.Contains(help.String(), "crusade -m box") || !strings.Contains(help.String(), "crusade -m align -r limit 10") || !strings.Contains(help.String(), "crusade -m do -c") || !strings.Contains(help.String(), "resume the last mode") {
+	if !strings.Contains(help.String(), "open a mode:") || !strings.Contains(help.String(), "crusade -m box") || !strings.Contains(help.String(), "crusade -m align -r limit 10") || !strings.Contains(help.String(), "crusade -m do -c") || !strings.Contains(help.String(), "radial menu") && strings.Contains(help.String(), "do list") {
 		t.Fatalf("help output missing expected contract text:\n%s", help.String())
 	}
 	if strings.Contains(help.String(), "\x1b") {
@@ -316,7 +316,7 @@ func TestBoxCreateAndUpdateEditAllBoxesInYAML(t *testing.T) {
 	}
 }
 
-func TestOpenResumesLastMode(t *testing.T) {
+func TestOpenUsesTheRadial(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
@@ -326,8 +326,21 @@ func TestOpenResumesLastMode(t *testing.T) {
 	if _, err := store.Open(db); err != nil {
 		t.Fatal(err)
 	}
-	var opened string
-	previous := runTUI
+	previousPick := pickMode
+	previousTUI := runTUI
+	previousDo := openDoFile
+	t.Cleanup(func() {
+		pickMode = previousPick
+		runTUI = previousTUI
+		openDoFile = previousDo
+	})
+	picked := ""
+	opened := ""
+	doOpened := false
+	pickMode = func(preferred string) (string, error) {
+		picked = preferred
+		return model.ModeBox, nil
+	}
 	runTUI = func(dataPath, mode string, stdout, stderr io.Writer) int {
 		opened = mode
 		if dataPath != db {
@@ -335,17 +348,85 @@ func TestOpenResumesLastMode(t *testing.T) {
 		}
 		return 0
 	}
-	t.Cleanup(func() { runTUI = previous })
-
-	var out bytes.Buffer
-	if code := Run([]string{"open"}, &out, &bytes.Buffer{}); code != 0 || opened != model.ModeDo {
-		t.Fatalf("default open code=%d mode=%q out=%q", code, opened, out.String())
+	openDoFile = func(string) error {
+		doOpened = true
+		return nil
 	}
-	if err := store.SaveLastMode(db, model.ModeBox); err != nil {
+	var out bytes.Buffer
+	if code := Run([]string{"open"}, &out, &bytes.Buffer{}); code != 0 || picked != model.ModeDo || opened != model.ModeBox || doOpened {
+		t.Fatalf("default open code=%d picked=%q opened=%q do=%v out=%q", code, picked, opened, doOpened, out.String())
+	}
+	pickMode = func(preferred string) (string, error) {
+		picked = preferred
+		return "", nil
+	}
+	opened = ""
+	if code := Run([]string{"open"}, &out, &bytes.Buffer{}); code != 0 || picked != model.ModeDo || opened != "" || doOpened {
+		t.Fatalf("cancel code=%d picked=%q opened=%q do=%v out=%q", code, picked, opened, doOpened, out.String())
+	}
+	if err := store.SaveLastMode(db, model.ModeCal); err != nil {
 		t.Fatal(err)
 	}
-	if code := Run([]string{"open"}, &out, &bytes.Buffer{}); code != 0 || opened != model.ModeBox {
-		t.Fatalf("resume open code=%d mode=%q out=%q", code, opened, out.String())
+	pickMode = func(preferred string) (string, error) {
+		picked = preferred
+		return model.ModeDo, nil
+	}
+	if code := Run([]string{"open"}, &out, &bytes.Buffer{}); code != 0 || picked != model.ModeCal || !doOpened {
+		t.Fatalf("do open code=%d picked=%q do=%v out=%q", code, picked, doOpened, out.String())
+	}
+}
+
+func TestDoModeOpensTheListFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("SQLX_ROOT", filepath.Join(home, "sqlx"))
+	t.Setenv("BOXES_CONFIG", filepath.Join(home, "missing-outline.txt"))
+	t.Setenv("VISUAL", "")
+	logPath := filepath.Join(home, "editor.log")
+	editor := filepath.Join(home, "editor")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '" + logPath + "'\n"
+	if err := os.WriteFile(editor, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EDITOR", editor)
+	if code := Run([]string{"-m", "do", "-c", "mail the letter"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatal(code)
+	}
+	var out bytes.Buffer
+	if code := Run([]string{"-m", "do"}, &out, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("open code=%d out=%s", code, out.String())
+	}
+	listPath := filepath.Join(home, "config", "xyz", "do")
+	body, err := os.ReadFile(listPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "mail the letter\n" {
+		t.Fatalf("list = %q", body)
+	}
+	if err := os.WriteFile(listPath, []byte("keep this\n- grouped\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := Run([]string{"-m", "do", "-c", "second item"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatal(code)
+	}
+	if code := Run([]string{"-m", "do"}, &out, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("second open code=%d out=%s", code, out.String())
+	}
+	body, err = os.ReadFile(listPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "keep this\n- grouped\n" {
+		t.Fatalf("list rewritten:\n%s", body)
+	}
+	logged, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(logged), listPath) != 2 {
+		t.Fatalf("editor log = %q", logged)
 	}
 }
 

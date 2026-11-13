@@ -298,7 +298,7 @@ func (m calModel) helpModal() string {
 		{key: "d", description: "Delete"},
 		{key: "o", description: "Open the meeting link"},
 		{key: "t", description: "Today"},
-		{key: "tab", description: "Do / align / box / cal / nlp"},
+		{key: "tab", description: "Align / box / cal / nlp"},
 		{key: "? / esc", description: "Close this guide"},
 		{key: "q", description: "Quit"},
 	}

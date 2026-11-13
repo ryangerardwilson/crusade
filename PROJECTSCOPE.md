@@ -14,23 +14,17 @@ packaging are separated cleanly.
 - Do records store the outcome and the day the task belongs to.
   They do not store an x/y/z statement.
 - Keep do records, align records, boxes, and time blocks in the sqlx database `crusade`.
-  Align mode lists align records and has no month calendar. Do mode lists do records and keeps the month calendar. Box mode lists the checklist. Cal mode draws the week as an hour sheet sized to the screen. A cell shows part of a block, and the focus box shows the whole block under the cursor. o opens its meeting link in the browser. From the Super+C window, that also closes crusade.
-- `crusade -m do` opens the do agenda. `crusade -m align` opens align mode. `crusade -m box` opens the daily checklist. `q` quits the TUI. While a do task is being typed, `q` is a letter. Tab cycles do, align, box, cal, and nlp, and returns each mode to the screen you left. crusade open resumes the last mode, or do when none is saved. Each mode puts the same blue badge, `DO`, `ALIGN`, `BOX`, `CAL`, or `NLP`, in the top right. Cal mode blocks time. Each block has a title, a start, an end on one day, and an optional meeting url. Do tasks do not block time. h and l change the day. The week is an hour sheet sized to the screen. A cell shows part of a block, and the focus box shows the whole block under the cursor. o opens its meeting link in the browser. From the Super+C window, that also closes crusade. j and k move one hour at a time. A block starts and ends on the hour. v selects a span. n and e open a form for the title, the start, the end, an optional meeting url, and the repeat. days repeats on chosen weekdays. On a repeating block, that form applies to this event, this and following, or all events. d removes or deletes a repeating block. o is this event, f is this and following, and a is all events. A one-off block uses the same form to edit and dd to delete.
-- Do and align lists are checkbox rows drawn from the top of the terminal downward. Space marks the selected task done and leaves it in the list. `dd` still deletes it. `?` toggles a shortcuts modal over the current screen. In the box list, n adds a box after the selected one, e edits its text, and dd deletes it and any box under it. Those edits stay in the TUI. While a box is being typed, q is a letter. Below the box list, a momentum graph draws checked days as a contribution calendar: weeks are columns, weekdays are rows, bluer squares mean more boxes checked, and the caption is the current streak.
-- Do mode asks for the task text only. A new task is dated today in the agenda,
-  or on the selected day of the month calendar. `e` edits that text. `r` changes
-  the selected task's date. A date alone is stored at 23:59:59.
-  The do agenda and the do month show how many do tasks were marked done during
-  the current week, and how many do tasks were deleted during that same week.
-  The line reads "N items done and M deleted this week". That week starts on
-  Monday and ends on Sunday. The done count uses the moment the task is marked
-  done, not the day it is scheduled for. The deleted count uses the moment the
-  task is deleted. Deleting a task that was marked done this week counts it as
-  deleted and no longer as done.
+  Align mode lists align records and has no month calendar. Do mode opens the list file. Box mode lists the checklist. Cal mode draws the week as an hour sheet sized to the screen. A cell shows part of a block, and the focus box shows the whole block under the cursor. o opens its meeting link in the browser. From the Super+C window, that also closes crusade.
+- `crusade -m do` opens the do list in `$VISUAL`, `$EDITOR`, or vim. `crusade -m align` opens align mode. `crusade -m box` opens the daily checklist. `q` quits the TUI. Tab cycles align, box, cal, and nlp, and returns each mode to the screen you left. `crusade open` shows a radial menu of do, align, box, cal, and nlp, with the last mode selected. Each mode puts the same blue badge, `ALIGN`, `BOX`, `CAL`, or `NLP`, in the top right. Cal mode blocks time. Each block has a title, a start, an end on one day, and an optional meeting url. Do tasks do not block time. h and l change the day. The week is an hour sheet sized to the screen. A cell shows part of a block, and the focus box shows the whole block under the cursor. o opens its meeting link in the browser. From the Super+C window, that also closes crusade. j and k move one hour at a time. A block starts and ends on the hour. v selects a span. n and e open a form for the title, the start, the end, an optional meeting url, and the repeat. days repeats on chosen weekdays. On a repeating block, that form applies to this event, this and following, or all events. d removes or deletes a repeating block. o is this event, f is this and following, and a is all events. A one-off block uses the same form to edit and dd to delete.
+- Align lists are checkbox rows drawn from the top of the terminal downward. Space marks the selected task done and leaves it in the list. `dd` still deletes it. `?` toggles a shortcuts modal over the current screen. In the box list, n adds a box after the selected one, e edits its text, and dd deletes it and any box under it. Those edits stay in the TUI. While a box is being typed, q is a letter. Below the box list, a momentum graph draws checked days as a contribution calendar: weeks are columns, weekdays are rows, bluer squares mean more boxes checked, and the caption is the current streak.
+- Do mode opens `$XDG_CONFIG_HOME/xyz/do`, or `~/.config/xyz/do`, in `$VISUAL`, `$EDITOR`, or vim.
+  The first open writes each current do outcome on its own line.
+  Later opens leave the file as you arranged it.
+  `-c`, `-r`, `-u`, and `-d` still read and write the dated do rows in the database.
 - Align mode is the outcome tracker. From the TUI, open Vim on that one record
   as YAML to add at the selected date or edit the selected task, then save the row.
 - Preserve the deterministic command grammar. CRUD names the mode and one operation:
-  - `crusade -m do` opens do mode. `crusade -m align` opens align mode. `crusade -m box` opens box mode.
+  - `crusade open` shows the radial menu. `crusade -m do` opens the do list. `crusade -m align` opens align mode. `crusade -m box` opens box mode.
   - `crusade -m do|align -c|-r|-u|-d [args]`
   - `crusade -m box -r` shows today. `crusade -m box -c` and `crusade -m box -u` open the outline YAML in Vim and save every box.
   - `crusade -m do -c <outcome> [when]`
@@ -49,14 +43,15 @@ packaging are separated cleanly.
 - `internal/cli`: command grammar, editor flow, help, config, upgrade.
 - `internal/model`: mode, datetime, and the align YAML record.
 - `internal/store`: sqlx database load/save/add/update/delete, plus a one-time boxes import.
-- `internal/tui`: Bubble Tea do agenda and month, align list, box checklist, cal time blocks, and the nlp practice list, plus Vim suspension and
+- `internal/tui`: Bubble Tea align list, box checklist, cal time blocks, and the nlp practice list, plus Vim suspension and
   reload.
+- `internal/radial`: the Quickshell radial menu.
+- `internal/dofile`: the freeform do list.
 - `internal/config`: XDG config.
 - `internal/version`: release-time version injection.
 
 The TUI and CLI share the sqlx database `crusade`. Align-mode add and edit suspend
-Bubble Tea and open Vim on that one record as YAML. Do mode edits the outcome in
-the terminal. Box mode adds, edits, and deletes each box in the terminal. The database lives under the sqlx root, which defaults to `~/.sqlx`.
+Bubble Tea and open Vim on that one record as YAML. Do mode opens the list file in an editor. Box mode adds, edits, and deletes each box in the terminal. The database lives under the sqlx root, which defaults to `~/.sqlx`.
 
 ## Config And Storage
 
@@ -66,6 +61,15 @@ Config path:
 $XDG_CONFIG_HOME/xyz/config.json
 ~/.config/xyz/config.json
 ```
+
+Do list:
+
+```text
+$XDG_CONFIG_HOME/xyz/do
+~/.config/xyz/do
+```
+
+The first open writes each current do outcome on its own line. Later opens leave the file as you arranged it.
 
 Database:
 

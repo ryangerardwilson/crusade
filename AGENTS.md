@@ -83,7 +83,7 @@ Do not edit canonical specs directly to smuggle in new behavior.
 Repository: `crusade` at `github.com/ryangerardwilson/crusade`.
 
 crusade is one Go binary. The command is `crusade`. Modes are `do`, `align`,
-`box`, and `nlp`. Config stays at `~/.config/xyz/config.json`. The database is
+`box`, and `nlp`. Config stays at `~/.config/crusade/config.json`. An existing `~/.config/xyz` config and do list are moved once. The database is
 `~/.sqlx/data/crusade.sqlite`, opened through `sqlite3`. Practice sessions stay
 in the sqlx database `nlp`.
 

@@ -41,12 +41,13 @@ crusade open
 
 ## Storage
 
-Config lives at `$XDG_CONFIG_HOME/xyz/config.json`, with fallback
-`~/.config/xyz/config.json`. The file is an empty object. Crusade removes
+Config lives at `$XDG_CONFIG_HOME/crusade/config.json`, with fallback
+`~/.config/crusade/config.json`. The file is an empty object. Crusade removes
 `data_yaml_path` and `data_csv_path` when an older file still has them.
-The do list is the text file beside that config: `$XDG_CONFIG_HOME/xyz/do`,
-or `~/.config/xyz/do`. The first open writes one current outcome per line,
-then leaves the wording and layout alone.
+The do list is the text file beside that config: `$XDG_CONFIG_HOME/crusade/do`,
+or `~/.config/crusade/do`. The first open writes one current outcome per line,
+then leaves the wording and layout alone. An existing config and do list under
+`~/.config/xyz` are moved once.
 
 Tasks live in the sqlx database `crusade`:
 

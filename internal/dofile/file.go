@@ -18,6 +18,9 @@ func Path() string {
 // Ensure creates the list from current do outcomes when the file is missing.
 // An existing file is left untouched.
 func Ensure(dataPath string) error {
+	if err := config.Ensure(); err != nil {
+		return err
+	}
 	path := Path()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err

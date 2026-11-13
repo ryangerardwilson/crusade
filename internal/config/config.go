@@ -2,25 +2,38 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 )
 
 const ConfigBootstrapText = "{}\n"
 
 type Config struct{}
 
-func Path() string {
+func configBase() string {
 	base := os.Getenv("XDG_CONFIG_HOME")
 	if base == "" {
 		base = filepath.Join(homeDir(), ".config")
 	}
-	return filepath.Join(base, "xyz", "config.json")
+	return base
+}
+
+func Path() string {
+	return filepath.Join(configBase(), "crusade", "config.json")
+}
+
+func legacyPath() string {
+	return filepath.Join(configBase(), "xyz", "config.json")
 }
 
 func Ensure() error {
+	if err := migrateLegacyConfig(); err != nil {
+		return err
+	}
 	configPath := Path()
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
 		return err
@@ -29,6 +42,50 @@ func Ensure() error {
 		return os.WriteFile(configPath, []byte(ConfigBootstrapText), 0o644)
 	}
 	return nil
+}
+
+// migrateLegacyConfig moves a config and do list saved under the old xyz
+// directory into the crusade directory. An existing crusade file is kept.
+func migrateLegacyConfig() error {
+	if err := moveIfMissing(legacyPath(), Path()); err != nil {
+		return err
+	}
+	legacyDo := filepath.Join(filepath.Dir(legacyPath()), "do")
+	nextDo := filepath.Join(filepath.Dir(Path()), "do")
+	if err := moveIfMissing(legacyDo, nextDo); err != nil {
+		return err
+	}
+	return removeEmptyLegacyDir()
+}
+
+func moveIfMissing(from, to string) error {
+	if _, err := os.Stat(to); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	info, err := os.Stat(from)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.IsDir() {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+		return err
+	}
+	return os.Rename(from, to)
+}
+
+func removeEmptyLegacyDir() error {
+	err := os.Remove(filepath.Dir(legacyPath()))
+	if err == nil || os.IsNotExist(err) || errors.Is(err, syscall.ENOTEMPTY) {
+		return nil
+	}
+	return err
 }
 
 func Load() (Config, error) {

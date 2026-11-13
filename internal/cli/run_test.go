@@ -56,7 +56,7 @@ func TestConfigCreatesBootstrap(t *testing.T) {
 	if code := Run([]string{"config"}, &out, &bytes.Buffer{}); code != 0 {
 		t.Fatalf("config code = %d output=%q", code, out.String())
 	}
-	data, err := os.ReadFile(filepath.Join(home, "config", "xyz", "config.json"))
+	data, err := os.ReadFile(filepath.Join(home, "config", "crusade", "config.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +458,7 @@ func TestDoModeOpensTheListFile(t *testing.T) {
 	if code := Run([]string{"-m", "do"}, &out, &bytes.Buffer{}); code != 0 {
 		t.Fatalf("open code=%d out=%s", code, out.String())
 	}
-	listPath := filepath.Join(home, "config", "xyz", "do")
+	listPath := filepath.Join(home, "config", "crusade", "do")
 	body, err := os.ReadFile(listPath)
 	if err != nil {
 		t.Fatal(err)

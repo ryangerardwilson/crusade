@@ -52,8 +52,10 @@ go run ./cmd/crusade -m do -c "mail the letter"
 
 ## Storage Contract
 
-Config lives at `$XDG_CONFIG_HOME/xyz/config.json`, falling back to
-`~/.config/xyz/config.json`. Crusade removes `data_yaml_path` and `data_csv_path` when an older file still has them.
+Config lives at `$XDG_CONFIG_HOME/crusade/config.json`, falling back to
+`~/.config/crusade/config.json`. The do list is `$XDG_CONFIG_HOME/crusade/do`.
+Crusade removes `data_yaml_path` and `data_csv_path` when an older file still has them.
+An existing config and do list under `~/.config/xyz` are moved once.
 
 Tasks and boxes live in `$SQLX_ROOT/data/crusade.sqlite`, or `~/.sqlx/data/crusade.sqlite` when `SQLX_ROOT` is unset.
 

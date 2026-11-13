@@ -11,7 +11,7 @@ global actions:
   crusade upgrade
     upgrade to the latest release
   crusade config
-    open config in $VISUAL/$EDITOR
+    open $XDG_CONFIG_HOME/crusade/config.json, or ~/.config/crusade/config.json
 
 open a mode:
   crusade open
@@ -25,7 +25,7 @@ open a mode:
   crusade -m cal
   crusade -m nlp
 
-  The do list is $XDG_CONFIG_HOME/xyz/do, or ~/.config/xyz/do.
+  The do list is $XDG_CONFIG_HOME/crusade/do, or ~/.config/crusade/do.
   The first open lists each do outcome on its own line.
   Later opens keep the file as you left it.
   In the TUI, tab cycles align, box, cal, and nlp. ? toggles a shortcuts modal.

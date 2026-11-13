@@ -12,6 +12,7 @@ import (
 	"github.com/ryangerardwilson/crusade/internal/config"
 	"github.com/ryangerardwilson/crusade/internal/model"
 	"github.com/ryangerardwilson/crusade/internal/store"
+	"github.com/ryangerardwilson/crusade/internal/tui"
 	"github.com/ryangerardwilson/crusade/internal/version"
 )
 
@@ -334,45 +335,105 @@ func TestOpenUsesTheRadial(t *testing.T) {
 		runTUI = previousTUI
 		openDoFile = previousDo
 	})
-	picked := ""
-	opened := ""
-	doOpened := false
+	var prefs []string
+	var opened []string
 	pickMode = func(preferred string) (string, error) {
-		picked = preferred
-		return model.ModeBox, nil
+		prefs = append(prefs, preferred)
+		if len(opened) == 0 {
+			return model.ModeBox, nil
+		}
+		return "", nil
 	}
 	runTUI = func(dataPath, mode string, stdout, stderr io.Writer) int {
-		opened = mode
 		if dataPath != db {
 			t.Fatalf("data path = %s", dataPath)
 		}
+		if err := store.SaveLastMode(dataPath, mode); err != nil {
+			t.Fatal(err)
+		}
+		opened = append(opened, mode)
 		return 0
+	}
+	openDoFile = func(string) error {
+		t.Fatal("do file")
+		return nil
+	}
+	var out bytes.Buffer
+	if code := Run([]string{"open"}, &out, &bytes.Buffer{}); code != 0 || strings.Join(prefs, ",") != model.ModeDo+","+model.ModeBox || strings.Join(opened, ",") != model.ModeBox {
+		t.Fatalf("code=%d prefs=%v opened=%v out=%q", code, prefs, opened, out.String())
+	}
+}
+
+func TestOpenReturnsToTheRadialAfterDo(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("SQLX_ROOT", filepath.Join(home, "sqlx"))
+	t.Setenv("BOXES_CONFIG", filepath.Join(home, "missing-outline.txt"))
+	db := store.DatabasePath()
+	if _, err := store.Open(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveLastMode(db, model.ModeCal); err != nil {
+		t.Fatal(err)
+	}
+	previousPick := pickMode
+	previousTUI := runTUI
+	previousDo := openDoFile
+	t.Cleanup(func() {
+		pickMode = previousPick
+		runTUI = previousTUI
+		openDoFile = previousDo
+	})
+	var prefs []string
+	doOpened := false
+	pickMode = func(preferred string) (string, error) {
+		prefs = append(prefs, preferred)
+		if !doOpened {
+			return model.ModeDo, nil
+		}
+		return "", nil
 	}
 	openDoFile = func(string) error {
 		doOpened = true
 		return nil
 	}
-	var out bytes.Buffer
-	if code := Run([]string{"open"}, &out, &bytes.Buffer{}); code != 0 || picked != model.ModeDo || opened != model.ModeBox || doOpened {
-		t.Fatalf("default open code=%d picked=%q opened=%q do=%v out=%q", code, picked, opened, doOpened, out.String())
+	runTUI = func(string, string, io.Writer, io.Writer) int {
+		t.Fatal("tui")
+		return 1
 	}
-	pickMode = func(preferred string) (string, error) {
-		picked = preferred
-		return "", nil
+	if code := Run([]string{"open"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 || !doOpened || strings.Join(prefs, ",") != model.ModeCal+","+model.ModeDo {
+		t.Fatalf("code=%d do=%v prefs=%v", code, doOpened, prefs)
 	}
-	opened = ""
-	if code := Run([]string{"open"}, &out, &bytes.Buffer{}); code != 0 || picked != model.ModeDo || opened != "" || doOpened {
-		t.Fatalf("cancel code=%d picked=%q opened=%q do=%v out=%q", code, picked, opened, doOpened, out.String())
-	}
-	if err := store.SaveLastMode(db, model.ModeCal); err != nil {
+}
+
+func TestOpenLinkClosesInsteadOfReturning(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("SQLX_ROOT", filepath.Join(home, "sqlx"))
+	t.Setenv("BOXES_CONFIG", filepath.Join(home, "missing-outline.txt"))
+	if _, err := store.Open(store.DatabasePath()); err != nil {
 		t.Fatal(err)
 	}
-	pickMode = func(preferred string) (string, error) {
-		picked = preferred
-		return model.ModeDo, nil
+	previousPick := pickMode
+	previousTUI := runTUI
+	t.Cleanup(func() {
+		pickMode = previousPick
+		runTUI = previousTUI
+		tui.ExitAfterMode = false
+	})
+	calls := 0
+	pickMode = func(string) (string, error) {
+		calls++
+		return model.ModeCal, nil
 	}
-	if code := Run([]string{"open"}, &out, &bytes.Buffer{}); code != 0 || picked != model.ModeCal || !doOpened {
-		t.Fatalf("do open code=%d picked=%q do=%v out=%q", code, picked, doOpened, out.String())
+	runTUI = func(string, string, io.Writer, io.Writer) int {
+		tui.ExitAfterMode = true
+		return 0
+	}
+	if code := Run([]string{"open"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 || calls != 1 {
+		t.Fatalf("code=%d calls=%d", code, calls)
 	}
 }
 

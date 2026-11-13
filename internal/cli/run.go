@@ -44,20 +44,34 @@ var pickMode = radial.Pick
 var openDoFile = dofile.Open
 
 func openRadial(dbPath string, stdout, stderr io.Writer) int {
+	for {
+		code, done := runRadialOnce(dbPath, stdout, stderr)
+		if done {
+			return code
+		}
+	}
+}
+
+func runRadialOnce(dbPath string, stdout, stderr io.Writer) (int, bool) {
 	preferred, err := store.LastMode(dbPath)
 	if err != nil {
 		fmt.Fprintln(stdout, err)
-		return 1
+		return 1, true
 	}
 	chosen, err := pickMode(preferred)
 	if err != nil {
 		fmt.Fprintln(stdout, err)
-		return 1
+		return 1, true
 	}
 	if chosen == "" {
-		return 0
+		return 0, true
 	}
-	return launchChosen(dbPath, chosen, stdout, stderr)
+	tui.ExitAfterMode = false
+	code := launchChosen(dbPath, chosen, stdout, stderr)
+	if code != 0 || tui.ExitAfterMode {
+		return code, true
+	}
+	return 0, false
 }
 
 func launchChosen(dbPath, mode string, stdout, stderr io.Writer) int {

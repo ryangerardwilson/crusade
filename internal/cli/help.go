@@ -16,6 +16,8 @@ global actions:
 open a mode:
   crusade open
     show the radial menu. The last mode starts selected.
+    The order is do, cal, box, nlp, align.
+    Leaving a mode returns to the menu. Esc on the menu quits.
   crusade -m do
     open the do list in $VISUAL, $EDITOR, or vim
   crusade -m align

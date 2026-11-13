@@ -222,6 +222,9 @@ func (m model) updateListKey(key string) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		m.moveSelection(1)
 	case "left", "h", "esc":
+		if key == "esc" && m.screen == screenCourses {
+			return m, tea.Quit
+		}
 		m.goBack()
 	case "right", "l", "enter":
 		m.activate()

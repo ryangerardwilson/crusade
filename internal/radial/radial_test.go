@@ -24,8 +24,17 @@ func TestPickReturnsTheSelectedMode(t *testing.T) {
 	if err != nil || got != "align" {
 		t.Fatalf("got %q err %v", got, err)
 	}
-	if !strings.Contains(data, `"preferred": "box"`) || !strings.Contains(data, `"name": "do"`) || !strings.Contains(data, `"label": "NLP"`) {
+	if !strings.Contains(data, `"preferred": "box"`) || !strings.Contains(data, `"label": "NLP"`) {
 		t.Fatalf("payload:\n%s", data)
+	}
+	order := []string{`"name": "do"`, `"name": "cal"`, `"name": "box"`, `"name": "nlp"`, `"name": "align"`}
+	last := -1
+	for _, name := range order {
+		idx := strings.Index(data, name)
+		if idx <= last {
+			t.Fatalf("order %s in\n%s", name, data)
+		}
+		last = idx
 	}
 }
 

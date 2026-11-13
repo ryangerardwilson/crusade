@@ -24,7 +24,7 @@ Sessions stay in the sqlx database nlp.
 Each session is one page and opens into touch typing.
 n creates a session, then vim edits its text. e opens the selected session in vim. ,rn renames it. dd deletes it.
 ? lists the shortcuts on the session list. During touch typing, ? is typed.
-Tab returns to align, except while a session is being named or typed. q quits.
+Tab returns to align, except while a session is being named or typed. Esc on the session list, or q, leaves this mode.
 `
 
 func stdoutIsTerm(w io.Writer) bool {

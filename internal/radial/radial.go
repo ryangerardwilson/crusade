@@ -76,10 +76,10 @@ func writeModes(path, preferred string) error {
 		Preferred: preferred,
 		Modes: []modeItem{
 			{Name: "do", Label: "DO", Blurb: "the list"},
-			{Name: "align", Label: "ALIGN", Blurb: "outcomes"},
-			{Name: "box", Label: "BOX", Blurb: "the day"},
 			{Name: "cal", Label: "CAL", Blurb: "the week"},
+			{Name: "box", Label: "BOX", Blurb: "the day"},
 			{Name: "nlp", Label: "NLP", Blurb: "practice"},
+			{Name: "align", Label: "ALIGN", Blurb: "outcomes"},
 		},
 	}
 	encoded, err := json.MarshalIndent(body, "", "  ")

@@ -202,7 +202,7 @@ func (m boxModel) helpModal() string {
 		{key: "r", description: "Reset the day"},
 		{key: "tab", description: "Align / box / cal / nlp"},
 		{key: "? / esc", description: "Close this guide"},
-		{key: "q", description: "Quit"},
+		{key: "q", description: "Leave"},
 	}
 	detail := "A parent is done when every box under it is done. n adds a box after the selected one. e edits its text. dd deletes it and any box under it. While a box is being typed, q is a letter. The graph under the list is a contribution calendar: columns are weeks, rows are days, and bluer squares mean more boxes checked. The caption is the current streak."
 	return shortcutModal(m.width, "BOX", items, detail)

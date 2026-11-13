@@ -422,3 +422,18 @@ func TestQuestionMarkTypesDuringTouchTyping(t *testing.T) {
 		t.Fatalf("typed %#v", typed.typeInputs)
 	}
 }
+
+func TestEscAtTheCourseListQuits(t *testing.T) {
+	m := testModel()
+	m.screen = screenCourses
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd == nil {
+		t.Fatal("esc did not leave the mode")
+	}
+	nested := testModel()
+	nested.screen = screenParts
+	stayed, cmd := nested.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd != nil || stayed.(model).screen != screenCourses {
+		t.Fatal("esc left a nested list")
+	}
+}

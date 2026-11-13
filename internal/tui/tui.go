@@ -182,6 +182,10 @@ var (
 	helpKeyStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("51"))
 )
 
+// ExitAfterMode reports that the mode closed crusade.
+// Opening a meeting link from the Super+C window sets it.
+var ExitAfterMode bool
+
 func Run(dataPath, mode string, stdout, stderr io.Writer) int {
 	rememberMode(dataPath, mode)
 	if mode == model.ModeBox {
@@ -594,9 +598,9 @@ func (m appModel) helpView(width int) string {
 		month = append(month, helpItem{key: "esc", description: "Leave the day list"})
 	}
 	exit := []helpItem{
-		{key: "q", description: "Quit"},
-		{key: "esc", description: "Quit"},
-		{key: "ctrl+c", description: "Quit"},
+		{key: "q", description: "Leave"},
+		{key: "esc", description: "Leave"},
+		{key: "ctrl+c", description: "Leave"},
 	}
 
 	var shortcuts string

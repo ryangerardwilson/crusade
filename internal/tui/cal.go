@@ -229,6 +229,7 @@ func (m calModel) handleCalGridKey(key string) (tea.Model, tea.Cmd) {
 		m.deleteSelected()
 	case "o":
 		if m.openSelected() {
+			ExitAfterMode = true
 			return m, tea.Quit
 		}
 	default:
@@ -300,7 +301,7 @@ func (m calModel) helpModal() string {
 		{key: "t", description: "Today"},
 		{key: "tab", description: "Align / box / cal / nlp"},
 		{key: "? / esc", description: "Close this guide"},
-		{key: "q", description: "Quit"},
+		{key: "q", description: "Leave"},
 	}
 	detail := "The focus box shows the block under the cursor. o opens its meeting link in the browser. From the Super+C window, that also closes crusade. n and e open a form for the title, start, end, an optional meeting url, and the repeat. days repeats on chosen weekdays. On a repeat, the form applies to this event, this and following, or all events. d removes a repeat the same way: o, f, or a."
 	return shortcutModal(m.width, "CAL", items, detail)

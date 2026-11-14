@@ -20,7 +20,7 @@ neuro-linguistic programming trainer
   nlp
     open the same mode
 
-Sessions stay in the sqlx database nlp.
+Sessions stay in the sql database nlp.
 Each session is one page and opens into touch typing.
 n creates a session, then vim edits its text. e opens the selected session in vim. ,rn renames it. dd deletes it.
 ? lists the shortcuts on the session list. During touch typing, ? is typed.

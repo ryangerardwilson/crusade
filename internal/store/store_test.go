@@ -119,7 +119,7 @@ func TestDatabaseMatchesSQLX(t *testing.T) {
 	if err := Save(db, []Record{{ID: 4, Event: event}}); err != nil {
 		t.Fatal(err)
 	}
-	bin, err := exec.LookPath("sqlx")
+	bin, err := exec.LookPath("sql")
 	if err != nil {
 		t.Fatal(err)
 	}

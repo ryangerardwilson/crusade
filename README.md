@@ -49,7 +49,7 @@ or `~/.config/crusade/do`. The first open writes one current outcome per line,
 then leaves the wording and layout alone. An existing config and do list under
 `~/.config/xyz` are moved once.
 
-Tasks live in the sqlx database `crusade`:
+Tasks live in the sql database `crusade`:
 
 ```text
 $SQLX_ROOT/data/crusade.sqlite

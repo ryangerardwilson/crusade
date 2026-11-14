@@ -72,6 +72,7 @@ func TestConfigCreatesBootstrap(t *testing.T) {
 func TestAddListEditDeleteFlow(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("SQLX_ROOT", filepath.Join(home, "sqlx"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
 	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
 	nowFunc = func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.Local) }
@@ -176,6 +177,7 @@ func TestUpgradeUsesOverrideScript(t *testing.T) {
 func TestListAndEditStayOnThinkRecords(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("SQLX_ROOT", filepath.Join(home, "sqlx"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
 	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
 	nowFunc = func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.Local) }

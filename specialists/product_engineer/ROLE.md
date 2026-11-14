@@ -28,11 +28,11 @@ Current structure:
 - `internal/config/`: XDG config.
 - `internal/model/`: datetime validation and the align YAML record.
 - `internal/box/`: checklist outline, parent completion, and check toggles.
-- `internal/store/`: the sqlx database `crusade`, plus a one-time boxes import.
+- `internal/store/`: the sql database `crusade`, plus a one-time boxes import.
 - `internal/tui/`: Bubble Tea align, box, cal, and nlp surfaces.
 - `internal/radial/`: the Quickshell radial menu.
 - `internal/dofile/`: the freeform do list.
-- `nlp/`: the practice-session mode. Sessions stay in the sqlx database `nlp`.
+- `nlp/`: the practice-session mode. Sessions stay in the sql database `nlp`.
 - `internal/version/`: release-time version variable.
 - `install.sh`: release/local-source installer.
 - `push_release_upgrade.sh`: push, tag, publish release asset, install from GitHub.

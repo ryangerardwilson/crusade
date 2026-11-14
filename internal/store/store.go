@@ -354,7 +354,7 @@ func migrateLegacyTask() error {
 }
 
 func databaseListed(name string) (bool, error) {
-	// `sqlx list databases` asks Postgres over SSH even when this
+	// `sql list databases` asks Postgres over SSH even when this
 	// database's memory copy is already on disk. Column lookup reads
 	// that copy, including a file that still has no orm.
 	_, err := sqlxCall(name, "columns", "task")
@@ -615,9 +615,9 @@ func sqlxBin() string {
 	if bin := os.Getenv("SQLX_BIN"); bin != "" {
 		return bin
 	}
-	path, err := exec.LookPath("sqlx")
+	path, err := exec.LookPath("sql")
 	if err != nil {
-		return "sqlx"
+		return "sql"
 	}
 	return path
 }

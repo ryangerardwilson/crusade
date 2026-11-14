@@ -70,7 +70,7 @@ records, one mode and one operation:
   crusade -m box -c
   crusade -m box -u
 
-  nlp is the practice list. Sessions stay in the sqlx database nlp.
+  nlp is the practice list. Sessions stay in the sql database nlp.
   # crusade -m nlp
   crusade -m nlp
 

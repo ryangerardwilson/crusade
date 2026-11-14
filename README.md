@@ -7,7 +7,7 @@
 An align row stores that statement. x is the day it happens, as `YYYY-MM-DD`.
 Vim edits the row as YAML.
 
-The app is a single Go binary. `crusade open` shows a radial menu of do, cal,
+The app is a single Go binary. Its databases are the [nebula](https://github.com/ryangerardwilson/nebula) `sql` feature. `crusade open` shows a radial menu of do, cal,
 box, nlp, and align. Leaving a mode returns to that menu. Esc on the menu quits. Enter or ctrl+m opens the selected mode.
 Align, box, cal, and nlp stay on the Bubble Tea surface.
 

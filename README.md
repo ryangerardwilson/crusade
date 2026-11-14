@@ -7,7 +7,7 @@
 An align row stores that statement. x is the day it happens, as `YYYY-MM-DD`.
 Vim edits the row as YAML.
 
-The app is a single Go binary. Its databases are the [nebula](https://github.com/ryangerardwilson/nebula) `sql` feature. `crusade open` shows a radial menu of do, cal,
+The app is a single Go binary. It keeps its databases in its own sqlite. [nebula](https://github.com/ryangerardwilson/nebula) `s3` backs those files up. `crusade open` shows a radial menu of do, cal,
 box, nlp, and align. Leaving a mode returns to that menu. Esc on the menu quits. Enter or ctrl+m opens the selected mode.
 Align, box, cal, and nlp stay on the Bubble Tea surface.
 
@@ -49,12 +49,7 @@ or `~/.config/crusade/do`. The first open writes one current outcome per line,
 then leaves the wording and layout alone. An existing config and do list under
 `~/.config/xyz` are moved once.
 
-Tasks live in the sql database `crusade`:
-
-```text
-$SQLX_ROOT/data/crusade.sqlite
-~/.sqlx/data/crusade.sqlite
-```
+Tasks live in the sqlite database `crusade`. While the machine is up the file is `$XDG_RUNTIME_DIR/crusade/crusade.sqlite`. A set `SQLX_ROOT` keeps it at `$SQLX_ROOT/data/crusade.sqlite`. nebula `s3` stores the backup at `s3://backups/crusade.sqlite`.
 
 ```text
 model task

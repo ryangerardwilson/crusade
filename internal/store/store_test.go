@@ -111,7 +111,7 @@ func TestSaveRejectsEmptyImpact(t *testing.T) {
 	}
 }
 
-func TestDatabaseMatchesSQLX(t *testing.T) {
+func TestSaveWritesTheAppSQLite(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("SQLX_ROOT", root)
 	db := DatabasePath()
@@ -119,25 +119,12 @@ func TestDatabaseMatchesSQLX(t *testing.T) {
 	if err := Save(db, []Record{{ID: 4, Event: event}}); err != nil {
 		t.Fatal(err)
 	}
-	bin, err := exec.LookPath("sql")
+	out, err := exec.Command("/usr/bin/sqlite3", db, "select id, y from task").CombinedOutput()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("query: %v\n%s", err, out)
 	}
-	inspect := exec.Command(bin, "crusade", "inspect")
-	inspectOut, err := inspect.CombinedOutput()
-	if err != nil {
-		t.Fatalf("inspect: %v\n%s", err, inspectOut)
-	}
-	if !strings.Contains(string(inspectOut), "orm match") || !strings.Contains(string(inspectOut), "task") {
-		t.Fatalf("inspect:\n%s", inspectOut)
-	}
-	query := exec.Command(bin, "crusade", "query", "select id, y from task")
-	queryOut, err := query.CombinedOutput()
-	if err != nil {
-		t.Fatalf("query: %v\n%s", err, queryOut)
-	}
-	if !strings.Contains(string(queryOut), "stored in sqlx") || !strings.Contains(string(queryOut), "4") {
-		t.Fatalf("query:\n%s", queryOut)
+	if !strings.Contains(string(out), "stored in sqlx") || !strings.Contains(string(out), "4") {
+		t.Fatalf("query:\n%s", out)
 	}
 }
 

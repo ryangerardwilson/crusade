@@ -39,9 +39,7 @@ func ormText() string {
 }
 
 func adoptLegacyDatabase(dbPath string) error {
-	_ = dbPath
-	_, err := sqlxCall("rename", "database", legacyDatabaseName, DatabaseName)
-	return err
+	return adoptSQLite(filepath.Dir(dbPath), legacyDatabaseName, dbPath)
 }
 
 func importBoxesOnce(dbPath string) error {

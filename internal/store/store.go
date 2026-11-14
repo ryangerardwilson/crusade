@@ -1,12 +1,8 @@
 package store
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -87,15 +83,7 @@ type taskRow struct {
 }
 
 func DatabasePath() string {
-	root := os.Getenv("SQLX_ROOT")
-	if root == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			home = "/tmp"
-		}
-		root = filepath.Join(home, ".sqlx")
-	}
-	return filepath.Join(root, "data", DatabaseName+".sqlite")
+	return dbFile(DatabaseName)
 }
 
 // Open creates the crusade database when it is missing and imports the boxes
@@ -110,13 +98,13 @@ func Open(dbPath string) (bool, error) {
 	}
 	if err := ensure(dbPath); err != nil {
 		if !existed {
-			_, _ = sqlxCall("drop", "database", DatabaseName)
+			_ = os.Remove(dbPath)
 		}
 		return false, err
 	}
 	if err := importBoxesOnce(dbPath); err != nil {
 		if !existed {
-			_, _ = sqlxCall("drop", "database", DatabaseName)
+			_ = os.Remove(dbPath)
 		}
 		return false, err
 	}
@@ -314,57 +302,46 @@ func weekStart(now time.Time) time.Time {
 }
 
 func ensure(dbPath string) error {
-	_ = dbPath
-	if _, err := sqlxCall("create", "database", DatabaseName); err != nil {
+	if err := prepareAppDB(dbPath, DatabaseName, ormText()); err != nil {
 		return err
 	}
-	if err := migrateLegacyTask(); err != nil {
-		return err
-	}
-	return sqlxMigrate(ormText())
+	return migrateLegacyTask(dbPath)
 }
 
-func migrateLegacyTask() error {
-	raw, err := sqlxCall(DatabaseName, "columns", "task")
+func migrateLegacyTask(dbPath string) error {
+	cols, err := tableColumns(dbPath, "task")
 	if err != nil {
 		return err
-	}
-	cols := map[string]bool{}
-	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			cols[line] = true
-		}
 	}
 	if !cols["p"] {
 		return nil
 	}
 	if !cols["done"] {
-		if _, err := sqlxCall(DatabaseName, "once", "task_done", "ALTER TABLE task ADD COLUMN done INTEGER NOT NULL DEFAULT 0"); err != nil {
+		if err := runOnce(dbPath, "task_done", "ALTER TABLE task ADD COLUMN done INTEGER NOT NULL DEFAULT 0"); err != nil {
 			return err
 		}
 	}
 	if !cols["done_at"] {
-		if _, err := sqlxCall(DatabaseName, "once", "task_done_at", "ALTER TABLE task ADD COLUMN done_at TEXT"); err != nil {
+		if err := runOnce(dbPath, "task_done_at", "ALTER TABLE task ADD COLUMN done_at TEXT"); err != nil {
 			return err
 		}
 	}
-	_, err = sqlxCall(DatabaseName, "once", "task_drop_scores", dropTaskScoresSQL)
-	return err
+	return runOnce(dbPath, "task_drop_scores", dropTaskScoresSQL)
 }
 
 func databaseListed(name string) (bool, error) {
-	// `sql list databases` asks Postgres over SSH even when this
-	// database's memory copy is already on disk. Column lookup reads
-	// that copy, including a file that still has no orm.
-	_, err := sqlxCall(name, "columns", "task")
-	if err == nil {
-		return true, nil
+	path := dbFile(name)
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
 	}
-	if strings.Contains(err.Error(), "does not exist") {
-		return false, nil
+	cols, err := tableColumns(path, "task")
+	if err != nil {
+		return false, err
 	}
-	return false, err
+	return len(cols) > 0, nil
 }
 
 func normalizeRecords(records []Record) ([]Record, error) {
@@ -577,83 +554,24 @@ func rowsChanged(dbPath, sql string) (bool, error) {
 }
 
 func queryJSON(dbPath, sql string, dest any) error {
-	_ = dbPath
-	raw, err := sqlxCall(DatabaseName, "query", "--json", sql)
-	if err != nil {
+	return sqliteQueryJSON(dbPath, sql, dest)
+}
+
+// execSQL writes the app sqlite. An empty task table is the damaged local
+// copy, so that file is not published.
+func execSQL(dbPath, sql string) error {
+	if err := sqliteExec(dbPath, sql); err != nil {
 		return err
 	}
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
+	if os.Getenv("SQLX_ROOT") != "" {
 		return nil
 	}
-	if err := json.Unmarshal([]byte(raw), dest); err != nil {
-		return fmt.Errorf("sqlite json: %w", err)
+	var rows []struct {
+		N int `json:"n"`
 	}
+	if err := sqliteQueryJSON(dbPath, "SELECT COUNT(*) AS n FROM task", &rows); err != nil || len(rows) == 0 || rows[0].N == 0 {
+		return nil
+	}
+	publishObject(dbPath, DatabaseName)
 	return nil
-}
-
-func execSQL(dbPath, sql string) error {
-	_ = dbPath
-	file, err := os.CreateTemp("", DatabaseName+"-sql-*")
-	if err != nil {
-		return err
-	}
-	sqlPath := file.Name()
-	defer os.Remove(sqlPath)
-	if _, err := file.WriteString(sql); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	_, err = sqlxCall(DatabaseName, "exec", "--file", sqlPath)
-	return err
-}
-
-func sqlxBin() string {
-	if bin := os.Getenv("SQLX_BIN"); bin != "" {
-		return bin
-	}
-	path, err := exec.LookPath("sql")
-	if err != nil {
-		return "sql"
-	}
-	return path
-}
-
-func sqlxCall(args ...string) (string, error) {
-	cmd := exec.Command(sqlxBin(), args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = strings.TrimSpace(stdout.String())
-		}
-		if msg == "" {
-			msg = err.Error()
-		}
-		return stdout.String(), fmt.Errorf("%s", msg)
-	}
-	return stdout.String(), nil
-}
-
-func sqlxMigrate(body string) error {
-	file, err := os.CreateTemp("", DatabaseName+"-orm-*")
-	if err != nil {
-		return err
-	}
-	name := file.Name()
-	defer os.Remove(name)
-	if _, err := file.WriteString(body); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	_, err = sqlxCall(DatabaseName, "migrate", name)
-	return err
 }

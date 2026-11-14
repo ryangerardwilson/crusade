@@ -1,12 +1,10 @@
 package state
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -82,10 +80,11 @@ func LoadCourses(version string) ([]course.Course, error) {
 }
 
 func openDB() (string, error) {
-	if err := ensure(); err != nil {
+	path := dbFile(databaseName)
+	if err := ensure(path); err != nil {
 		return "", err
 	}
-	return databaseName, nil
+	return path, nil
 }
 
 func homeDir() string {
@@ -352,14 +351,11 @@ func setMeta(dbPath, key, value string) error {
 	return execSQL(dbPath, "INSERT INTO meta(key, value) VALUES ("+sqlString(key)+", "+sqlString(value)+");\n")
 }
 
-func ensure() error {
-	if _, err := sqlxCall("create", "database", databaseName); err != nil {
+func ensure(dbPath string) error {
+	if err := prepareAppDB(dbPath, databaseName, ormText()); err != nil {
 		return err
 	}
-	if _, err := sqlxCall(databaseName, "once", "drop_bookmark", "DROP TABLE IF EXISTS bookmark; DELETE FROM sqlx_orm WHERE model = 'bookmark';"); err != nil {
-		return err
-	}
-	return sqlxMigrate(ormText())
+	return sqliteExec(dbPath, "DROP TABLE IF EXISTS bookmark;")
 }
 
 func ormText() string {
@@ -388,83 +384,13 @@ func expandPath(path string) string {
 }
 
 func queryJSON(dbPath, sql string, dest any) error {
-	_ = dbPath
-	raw, err := sqlxCall(databaseName, "query", "--json", sql)
-	if err != nil {
-		return err
-	}
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
-	}
-	if err := json.Unmarshal([]byte(raw), dest); err != nil {
-		return fmt.Errorf("sqlite json: %w", err)
-	}
-	return nil
+	return sqliteQueryJSON(dbPath, sql, dest)
 }
 
 func execSQL(dbPath, sql string) error {
-	_ = dbPath
-	file, err := os.CreateTemp("", databaseName+"-sql-*")
-	if err != nil {
+	if err := sqliteExec(dbPath, sql); err != nil {
 		return err
 	}
-	sqlPath := file.Name()
-	defer os.Remove(sqlPath)
-	if _, err := file.WriteString(sql); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	_, err = sqlxCall(databaseName, "exec", "--file", sqlPath)
-	return err
-}
-
-func sqlxBin() string {
-	if bin := os.Getenv("SQLX_BIN"); bin != "" {
-		return bin
-	}
-	path, err := exec.LookPath("sql")
-	if err != nil {
-		return "sql"
-	}
-	return path
-}
-
-func sqlxCall(args ...string) (string, error) {
-	cmd := exec.Command(sqlxBin(), args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = strings.TrimSpace(stdout.String())
-		}
-		if msg == "" {
-			msg = err.Error()
-		}
-		return stdout.String(), fmt.Errorf("%s", msg)
-	}
-	return stdout.String(), nil
-}
-
-func sqlxMigrate(body string) error {
-	file, err := os.CreateTemp("", databaseName+"-orm-*")
-	if err != nil {
-		return err
-	}
-	name := file.Name()
-	defer os.Remove(name)
-	if _, err := file.WriteString(body); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	_, err = sqlxCall(databaseName, "migrate", name)
-	return err
+	publishObject(dbPath, databaseName)
+	return nil
 }

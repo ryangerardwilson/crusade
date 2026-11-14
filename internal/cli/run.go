@@ -45,11 +45,49 @@ var openDoFile = dofile.Open
 
 func openRadial(dbPath string, stdout, stderr io.Writer) int {
 	for {
+		concealCursor(stdout)
 		code, done := runRadialOnce(dbPath, stdout, stderr)
 		if done {
 			return code
 		}
 	}
+}
+
+func openSession(stdout, stderr io.Writer) int {
+	concealCursor(stdout)
+	defer revealCursor(stdout)
+	if _, err := config.Load(); err != nil {
+		fmt.Fprintln(stdout, err)
+		return 1
+	}
+	dbPath := store.DatabasePath()
+	if _, err := store.Open(dbPath); err != nil {
+		fmt.Fprintln(stdout, err)
+		return 1
+	}
+	return openRadial(dbPath, stdout, stderr)
+}
+
+// The radial keeps the keyboard, so Alacritty draws its unfocused block
+// in the first cell. Hide that cursor on a terminal and leave other writers alone.
+func concealCursor(w io.Writer) {
+	writeCursor(w, "\x1b[?25l")
+}
+
+func revealCursor(w io.Writer) {
+	writeCursor(w, "\x1b[?25h")
+}
+
+func writeCursor(w io.Writer, sequence string) {
+	file, ok := w.(*os.File)
+	if !ok {
+		return
+	}
+	info, err := file.Stat()
+	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
+		return
+	}
+	_, _ = io.WriteString(file, sequence)
 }
 
 func runRadialOnce(dbPath string, stdout, stderr io.Writer) (int, bool) {
@@ -102,6 +140,9 @@ func openDo(dataPath string, stdout io.Writer) int {
 }
 
 func dispatch(args []string, stdout, stderr io.Writer) int {
+	if sameArgs(args, "open") {
+		return openSession(stdout, stderr)
+	}
 	if _, err := config.Load(); err != nil {
 		fmt.Fprintln(stdout, err)
 		return 1
@@ -120,8 +161,6 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 	}
 
 	switch {
-	case sameArgs(args, "open"):
-		return openRadial(dbPath, stdout, stderr)
 	case len(args) > 0 && args[0] == "open":
 		fmt.Fprintln(stdout, "Usage: crusade open")
 		return 1

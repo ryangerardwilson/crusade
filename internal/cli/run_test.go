@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/ryangerardwilson/crusade/internal/store"
 	"github.com/ryangerardwilson/crusade/internal/tui"
 	"github.com/ryangerardwilson/crusade/internal/version"
+	"golang.org/x/sys/unix"
 )
 
 func TestNoArgsMatchesHelp(t *testing.T) {
@@ -436,6 +439,76 @@ func TestOpenLinkClosesInsteadOfReturning(t *testing.T) {
 	if code := Run([]string{"open"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 || calls != 1 {
 		t.Fatalf("code=%d calls=%d", code, calls)
 	}
+}
+
+func TestCursorSequencesSkipOrdinaryWriters(t *testing.T) {
+	var buf bytes.Buffer
+	concealCursor(&buf)
+	revealCursor(&buf)
+	if buf.Len() != 0 {
+		t.Fatalf("buffer received %q", buf.String())
+	}
+	file, err := os.Create(filepath.Join(t.TempDir(), "out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { file.Close() })
+	concealCursor(file)
+	revealCursor(file)
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("file received %d bytes", info.Size())
+	}
+}
+
+func TestCursorSequencesReachATerminal(t *testing.T) {
+	master, slave := openTestPTY(t)
+	t.Cleanup(func() {
+		master.Close()
+		slave.Close()
+	})
+	concealCursor(slave)
+	revealCursor(slave)
+	if err := master.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 32)
+	n, err := master.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(buf[:n]); got != "\x1b[?25l\x1b[?25h" {
+		t.Fatalf("terminal received %q", got)
+	}
+}
+
+func openTestPTY(t *testing.T) (*os.File, *os.File) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("pty numbers come from linux ioctls")
+	}
+	master, err := os.OpenFile("/dev/ptmx", unix.O_RDWR|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.IoctlSetPointerInt(int(master.Fd()), unix.TIOCSPTLCK, 0); err != nil {
+		master.Close()
+		t.Fatal(err)
+	}
+	number, err := unix.IoctlGetInt(int(master.Fd()), unix.TIOCGPTN)
+	if err != nil {
+		master.Close()
+		t.Fatal(err)
+	}
+	slave, err := os.OpenFile("/dev/pts/"+strconv.Itoa(number), unix.O_RDWR|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		master.Close()
+		t.Fatal(err)
+	}
+	return master, slave
 }
 
 func TestDoModeOpensTheListFile(t *testing.T) {

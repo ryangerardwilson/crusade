@@ -354,16 +354,17 @@ func migrateLegacyTask() error {
 }
 
 func databaseListed(name string) (bool, error) {
-	raw, err := sqlxCall("list", "databases")
-	if err != nil {
-		return false, err
+	// `sqlx list databases` asks Postgres over SSH even when this
+	// database's memory copy is already on disk. Column lookup reads
+	// that copy, including a file that still has no orm.
+	_, err := sqlxCall(name, "columns", "task")
+	if err == nil {
+		return true, nil
 	}
-	for _, line := range strings.Split(raw, "\n") {
-		if strings.TrimSpace(line) == name {
-			return true, nil
-		}
+	if strings.Contains(err.Error(), "does not exist") {
+		return false, nil
 	}
-	return false, nil
+	return false, err
 }
 
 func normalizeRecords(records []Record) ([]Record, error) {

@@ -104,11 +104,15 @@ cannot silently overwrite a file.
 - **Trace** code before editing it: `c3po ast callers|callees|impact <symbol>`, then
   `map` and `show`. `search` is for a literal you already know. `c3po ast help callers`
   explains confidence levels and partial results.
-- **Read** with `c3po ast read <file> --lines A-B`, or a host Read with `limit` of at
-  most `max_read_lines` (200 by default).
-- **Edit** with `c3po ast patch <file> --expect-hash <sha> --old <text> --new <text>`.
-  `c3po ast hash <file>` prints the hash; each patch prints the next one. For several
-  files at once: `c3po ast apply --from-file <manifest.json|git diff>`.
+- **Read** with `c3po ast read <file> --lines A-B` (or a host Read, `limit` <= `max_read_lines`);
+  its `sha256 <hex>` header is the next `--expect-hash`. `c3po ast hash <file>` prints it too.
+- **Edit** with `c3po ast patch <file> --expect-hash <sha> --old <text> --new <text>`, or with
+  `--old-file <f>`, `--new-file <f>`, `--stdin` (quote the heredoc: `<<'EOF'`). Each patch prints the
+  next hash. Relative paths start at the git root. Plain patch is byte-exact; `gofmt -w` is denied.
+  To format or edit several files: `c3po ast apply --from-file <manifest.json|git diff>`.
+  Go, TypeScript, and Python (`.go` `.ts` `.tsx` `.py`) are refused at `max_cc` or above
+  on create, patch, apply, append, and a new-file Write. A function already over that line stays
+  editable (default 30). Unparsed Go is refused. `c3po ast gap` lists them.
 - **Create** with a host Write to a new path, or `c3po ast create <file> --expect-absent --stdin`.
 - **Move** with `c3po ast move <src> <dst> --expect-hash <sha>`; **delete** with
   `c3po ast delete <file> --expect-hash <sha>`.

@@ -35,8 +35,8 @@ const (
 var (
 	titleStyle    = lipgloss.NewStyle().Bold(true)
 	mutedStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	selectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("229")).Background(lipgloss.Color("238"))
-	statusStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("80"))
+	selectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Background(lipgloss.Color("238"))
+	statusStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
 	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 )
 

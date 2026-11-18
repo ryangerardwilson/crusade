@@ -169,17 +169,17 @@ var openTaskEditor = func(path string, id int, draft bool) tea.Cmd {
 }
 
 var (
-	titleStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("51"))
-	badgeStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("16")).Background(lipgloss.Color("51"))
+	titleStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255"))
+	badgeStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("16")).Background(lipgloss.Color("255"))
 	mutedStyle      = lipgloss.NewStyle().Faint(true)
-	infoStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("51"))
-	sectionStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("51"))
-	activeCellStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("16")).Background(lipgloss.Color("51"))
-	todayStyle      = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(lipgloss.Color("51"))
-	eventDayStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("220"))
+	infoStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
+	sectionStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255"))
+	activeCellStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("16")).Background(lipgloss.Color("255"))
+	todayStyle      = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(lipgloss.Color("255"))
+	eventDayStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
 	errorStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("204"))
-	helpPanelStyle  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("51")).Padding(1, 2)
-	helpKeyStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("51"))
+	helpPanelStyle  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("250")).Padding(1, 2)
+	helpKeyStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255"))
 )
 
 // ExitAfterMode reports that the mode closed crusade.

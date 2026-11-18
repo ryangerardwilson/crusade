@@ -141,7 +141,7 @@ func TestCtrlNSkipsTheLineAsDone(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI256)
 	t.Cleanup(func() { lipgloss.SetColorProfile(previous) })
 	want := statusStyle.Render("alpha")
-	if got := m.renderTypeLine(0); got != want || !strings.Contains(got, "38;5;80") {
+	if got := m.renderTypeLine(0); got != want || !strings.Contains(got, "38;5;255") {
 		t.Fatalf("skipped line %q", got)
 	}
 }

@@ -204,7 +204,7 @@ func (m boxModel) helpModal() string {
 		{key: "? / esc", description: "Close this guide"},
 		{key: "q", description: "Leave"},
 	}
-	detail := "A parent is done when every box under it is done. n adds a box after the selected one. e edits its text. dd deletes it and any box under it. While a box is being typed, q is a letter. The graph under the list is a contribution calendar: columns are weeks, rows are days, and bluer squares mean more boxes checked. The caption is the current streak."
+	detail := "A parent is done when every box under it is done. n adds a box after the selected one. e edits its text. dd deletes it and any box under it. While a box is being typed, q is a letter. The graph under the list is a contribution calendar: columns are weeks, rows are days, and lighter squares mean more boxes checked. The caption is the current streak."
 	return shortcutModal(m.width, "BOX", items, detail)
 }
 
@@ -302,14 +302,14 @@ func (m *boxModel) noteActiveDay() {
 	delete(m.dayCounts, m.day)
 }
 
-// contributionLevelStyle is the crusade blue used by the badge and titles.
+// contributionLevelStyle is a gray ramp.
 // Shade tracks boxes checked that day: none, one, two, three or four, then five or more.
 var contributionLevelStyle = [5]lipgloss.Style{
 	lipgloss.NewStyle().Foreground(lipgloss.Color("238")),
-	lipgloss.NewStyle().Foreground(lipgloss.Color("23")),
-	lipgloss.NewStyle().Foreground(lipgloss.Color("30")),
-	lipgloss.NewStyle().Foreground(lipgloss.Color("37")),
-	lipgloss.NewStyle().Foreground(lipgloss.Color("51")),
+	lipgloss.NewStyle().Foreground(lipgloss.Color("244")),
+	lipgloss.NewStyle().Foreground(lipgloss.Color("248")),
+	lipgloss.NewStyle().Foreground(lipgloss.Color("252")),
+	lipgloss.NewStyle().Foreground(lipgloss.Color("255")),
 }
 
 const (

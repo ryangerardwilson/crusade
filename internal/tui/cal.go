@@ -327,7 +327,7 @@ func (m calModel) renderFocus() string {
 	if width < 4 {
 		width = 4
 	}
-	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("51")).Width(width - 2).Render(text)
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("250")).Width(width - 2).Render(text)
 }
 
 func (m calModel) weekEmpty() bool {

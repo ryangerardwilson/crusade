@@ -104,7 +104,7 @@ func TestBoxShortcutsStayHiddenUntilHelp(t *testing.T) {
 	}
 }
 
-func TestModeBadgesShareTheBlueCorner(t *testing.T) {
+func TestModeBadgesShareTheGrayCorner(t *testing.T) {
 	forceStyledOutput(t)
 	do := appModel{mode: modeDo, view: viewAgenda, width: 48, height: 12}
 	align := appModel{mode: modeAlign, view: viewAgenda, width: 48, height: 12}
@@ -139,6 +139,9 @@ func TestModeBadgesShareTheBlueCorner(t *testing.T) {
 	}
 	if strings.Contains(color, "220") {
 		t.Fatalf("mode badge still uses amber: %q", color)
+	}
+	if strings.Contains(color, "0;255;255") || strings.Contains(color, "38;5;51") || strings.Contains(color, "48;5;51") {
+		t.Fatalf("mode badge still uses cyan: %q", color)
 	}
 	if !strings.Contains(box.View(), "October 20, 2026 (Tuesday)  0/0") {
 		t.Fatalf("box summary missing day count:\n%s", box.View())
@@ -288,7 +291,7 @@ func TestContributionCalendar(t *testing.T) {
 	}
 	forceStyledOutput(t)
 	if contributionLevelStyle[4].Render("■") != infoStyle.Render("■") {
-		t.Fatal("brightest square is not the UI blue")
+		t.Fatal("brightest square is not the UI gray")
 	}
 	viewed := contributionCell{day: time.Date(2026, 10, 20, 0, 0, 0, 0, time.Local), level: 2}
 	focused := renderContributionCell(viewed, "2026-10-20")

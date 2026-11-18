@@ -163,6 +163,9 @@ func AddRepeat(dbPath string, repeat model.Repeat) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	if err := repeat.OnTheHour(); err != nil {
+		return 0, err
+	}
 	if err := spanConflicts(dbPath, probeRepeat(repeat), nil); err != nil {
 		return 0, err
 	}
@@ -185,6 +188,9 @@ func ReplaceRepeat(dbPath string, id int, repeat model.Repeat) error {
 func saveRepeat(dbPath string, id int, repeat model.Repeat, dropOverrides bool) error {
 	repeat, err := normalizeRepeat(repeat)
 	if err != nil {
+		return err
+	}
+	if err := rejectMovedOffHour(dbPath, id, repeat); err != nil {
 		return err
 	}
 	changes, err := LoadRepeatChanges(dbPath)
@@ -283,12 +289,18 @@ func ContinueRepeat(dbPath string, id int, day time.Time, next model.Repeat, cle
 	if err := SetRepeatUntil(dbPath, id, day.AddDate(0, 0, -1)); err != nil {
 		return 0, err
 	}
-	return AddRepeat(dbPath, next)
+	if repeatClockChanged(current.Repeat, next) {
+		return AddRepeat(dbPath, next)
+	}
+	return insertRepeat(dbPath, next)
 }
 
 func MakeRepeatFromBlock(dbPath string, blockID int, repeat model.Repeat) (int, error) {
 	repeat, err := normalizeRepeat(repeat)
 	if err != nil {
+		return 0, err
+	}
+	if err := repeat.OnTheHour(); err != nil {
 		return 0, err
 	}
 	if err := spanConflicts(dbPath, probeRepeat(repeat), func(existing span) bool {
@@ -323,7 +335,7 @@ func OverrideRepeatDay(dbPath string, id int, day time.Time, title string, start
 	if err != nil {
 		return err
 	}
-	if err := block.OnTheHour(); err != nil {
+	if err := rejectOccurrenceClock(dbPath, id, day, block); err != nil {
 		return err
 	}
 	if !sameDateLocal(block.Start, day) {
@@ -406,10 +418,45 @@ func normalizeRepeat(repeat model.Repeat) (model.Repeat, error) {
 	if !next.Until.IsZero() && dateOnlyLocal(next.Until).Before(dateOnlyLocal(next.Start)) {
 		return model.Repeat{}, fmt.Errorf("a repeat ends on or after it starts")
 	}
-	if err := next.OnTheHour(); err != nil {
-		return model.Repeat{}, err
-	}
 	return next, nil
+}
+
+func rejectMovedOffHour(dbPath string, id int, repeat model.Repeat) error {
+	current, ok, err := requireRepeat(dbPath, id)
+	if err != nil || !ok || !repeatClockChanged(current.Repeat, repeat) {
+		return err
+	}
+	return repeat.OnTheHour()
+}
+
+func rejectOccurrenceClock(dbPath string, id int, day time.Time, block model.Block) error {
+	current, ok, err := requireRepeat(dbPath, id)
+	if err != nil || !ok {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("ID %d not found", id)
+	}
+	start, end := current.Repeat.SpanOn(day)
+	changes, err := LoadRepeatChanges(dbPath)
+	if err != nil {
+		return err
+	}
+	if change, found := changeFor(changes, id, day); found && !change.Skipped {
+		start, end = change.Start, change.End
+	}
+	if sameWallClock(block.Start, start) && sameWallClock(block.End, end) {
+		return nil
+	}
+	return block.OnTheHour()
+}
+
+func repeatClockChanged(current, next model.Repeat) bool {
+	return !sameWallClock(current.Start, next.Start) || !sameWallClock(current.End, next.End)
+}
+
+func sameWallClock(a, b time.Time) bool {
+	return a.Hour() == b.Hour() && a.Minute() == b.Minute() && a.Second() == b.Second()
 }
 
 func insertRepeat(dbPath string, repeat model.Repeat) (int, error) {

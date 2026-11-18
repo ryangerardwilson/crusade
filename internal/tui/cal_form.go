@@ -69,8 +69,8 @@ func (m *calModel) beginEdit(focus int) {
 	m.pendingDelete = false
 	m.capture(item)
 	m.composeText = item.title
-	m.formStart = snapDown(item.start).Format("15:04")
-	m.formEnd = snapUp(item.end).Format("15:04")
+	m.formStart = item.start.Format("15:04")
+	m.formEnd = item.end.Format("15:04")
 	m.formURL = item.url
 	m.formURLCursor = len([]rune(item.url))
 	m.formHasApply = item.repeatID != 0
@@ -452,7 +452,7 @@ func (m calModel) formTimes() (time.Time, time.Time, error) {
 	if !startOK || !endOK {
 		return time.Time{}, time.Time{}, fmt.Errorf("a block needs a start and an end")
 	}
-	if startMinute != 0 || endMinute != 0 {
+	if (startMinute != 0 || endMinute != 0) && !m.keepsFormClock(startHour, startMinute, endHour, endMinute) {
 		return time.Time{}, time.Time{}, fmt.Errorf("a block starts and ends on the hour")
 	}
 	start := clockOn(day, startHour, startMinute)
@@ -461,6 +461,13 @@ func (m calModel) formTimes() (time.Time, time.Time, error) {
 		end = end.AddDate(0, 0, 1)
 	}
 	return start, end, nil
+}
+
+func (m calModel) keepsFormClock(startHour, startMinute, endHour, endMinute int) bool {
+	if !m.formEditing {
+		return false
+	}
+	return m.targetStart.Hour() == startHour && m.targetStart.Minute() == startMinute && m.targetEnd.Hour() == endHour && m.targetEnd.Minute() == endMinute
 }
 
 func (m *calModel) commitNewForm(title string, start, end time.Time, freq, url string) {
@@ -535,6 +542,11 @@ func (m *calModel) commitRepeatForm(title string, start, end time.Time, freq, ur
 
 func (m *calModel) commitThisRepeat(title string, start, end time.Time, url string, titleChanged, timesChanged bool) {
 	urlChanged := url != m.targetURL
+	if urlChanged && !titleChanged && !timesChanged {
+		err := store.ApplyRepeatURL(m.dataPath, m.targetRepeatID, url)
+		m.finish("Saved the meeting link.", err, calPick{repeatID: m.targetRepeatID})
+		return
+	}
 	if urlChanged {
 		if err := store.ApplyRepeatURL(m.dataPath, m.targetRepeatID, url); err != nil {
 			m.fail(err)

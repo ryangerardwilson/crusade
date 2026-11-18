@@ -166,9 +166,19 @@ INSERT INTO repeat_change(id, repeat_id, day, skipped, title, start_at, end_at) 
 		t.Fatalf("block url %#v %v", blocks, err)
 	}
 	repeats[0].Repeat.URL = "https://meet.example/stand"
-	if err := UpdateRepeat(path, repeats[0].ID, repeats[0].Repeat); anyOf(err == nil, !strings.Contains(err.Error(), "on the hour")) {
+	if err := UpdateRepeat(path, repeats[0].ID, repeats[0].Repeat); err != nil {
+		t.Fatalf("url on a minute series = %v", err)
+	}
+	repeats, err = LoadRepeats(path)
+	if anyOf(err != nil, len(repeats) != 1, repeats[0].Repeat.URL != "https://meet.example/stand", repeats[0].Repeat.End.Minute() != 15) {
 
-		t.Fatalf("legacy minute repeat = %v", err)
+		t.Fatalf("kept minute clock %#v %v", repeats, err)
+	}
+	moved := repeats[0].Repeat
+	moved.End = moved.Start.Add(20 * time.Minute)
+	if err := UpdateRepeat(path, repeats[0].ID, moved); anyOf(err == nil, !strings.Contains(err.Error(), "on the hour")) {
+
+		t.Fatalf("moved minute repeat = %v", err)
 	}
 	repeats[0].Repeat.End = repeats[0].Repeat.Start.Add(time.Hour)
 	if err := UpdateRepeat(path, repeats[0].ID, repeats[0].Repeat); err != nil {

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1239,6 +1240,48 @@ func setForm(t *testing.T, m calModel, title, start, end, repeat, apply string) 
 		m = chooseForm(t, m, apply)
 	}
 	return m
+}
+
+func TestCalURLKeepsOffHourRepeat(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("SQLX_ROOT", root)
+	t.Setenv("BOXES_CONFIG", filepath.Join(t.TempDir(), "missing.txt"))
+	db := store.DatabasePath()
+	if _, err := store.Open(db); err != nil {
+		t.Fatal(err)
+	}
+	seed := "INSERT INTO repeat(id, title, start_at, end_at, freq) VALUES (1, 'standup', '2026-11-10 19:30:00', '2026-11-10 20:30:00', 'weekly');"
+	if out, err := exec.Command("/usr/bin/sqlite3", db, seed).CombinedOutput(); err != nil {
+		t.Fatalf("seed: %v %s", err, out)
+	}
+	tuesday := dateOnly(time.Date(2026, 11, 10, 12, 0, 0, 0, time.Local))
+	m := newCalModel(db, nil)
+	m.day = tuesday
+	m.cursor = time.Date(2026, 11, 10, 19, 0, 0, 0, time.Local)
+	m.width = 96
+	m.height = 24
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	m = keyCal(t, m, runeKey('e'))
+	if anyOf(m.formStart != "19:30", m.formEnd != "20:30") {
+		t.Fatalf("form clock start=%q end=%q err=%s", m.formStart, m.formEnd, m.errText)
+	}
+	m = setFormURL(t, m, "https://meet.example/ade")
+	m = keyCal(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	view := stripANSI(m.View())
+	if anyOf(m.errText != "", !strings.Contains(view, "https://meet.example/ade"), !strings.Contains(view, "19:30-20:30")) {
+		t.Fatalf("saved link:\n%s\nerr=%s", view, m.errText)
+	}
+	m = keyCal(t, m, tea.KeyMsg{Type: tea.KeyCtrlL})
+	view = stripANSI(m.View())
+	if anyOf(!strings.Contains(view, "https://meet.example/ade"), !strings.Contains(view, "19:30-20:30")) {
+		t.Fatalf("next week:\n%s", view)
+	}
+	repeats, err := store.LoadRepeats(db)
+	if anyOf(err != nil, len(repeats) != 1, repeats[0].Repeat.URL != "https://meet.example/ade", repeats[0].Repeat.Start.Minute() != 30, repeats[0].Repeat.End.Minute() != 30) {
+		t.Fatalf("series %#v %v", repeats, err)
+	}
 }
 
 func setFormURL(t *testing.T, m calModel, url string) calModel {

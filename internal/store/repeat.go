@@ -371,6 +371,24 @@ func SetRepeatOverrideURLs(dbPath string, id int, url string) error {
 	return execSQL(dbPath, fmt.Sprintf("UPDATE repeat_change SET url = %s WHERE repeat_id = %d AND skipped = 0;\n", sqlString(strings.TrimSpace(url)), id))
 }
 
+// ApplyRepeatURL stores the meeting url on the series and drops per-day url
+// pins, so every occurrence uses that link.
+func ApplyRepeatURL(dbPath string, id int, url string) error {
+	repeats, err := LoadRepeats(dbPath)
+	if err != nil {
+		return err
+	}
+	current, ok := findRepeat(repeats, id)
+	if !ok {
+		return fmt.Errorf("ID %d not found", id)
+	}
+	current.Repeat.URL = strings.TrimSpace(url)
+	if err := UpdateRepeat(dbPath, id, current.Repeat); err != nil {
+		return err
+	}
+	return execSQL(dbPath, fmt.Sprintf("UPDATE repeat_change SET url = NULL WHERE repeat_id = %d AND skipped = 0;\n", id))
+}
+
 func DeleteRepeatChangesFrom(dbPath string, id int, day time.Time) error {
 	if err := ensure(dbPath); err != nil {
 		return err

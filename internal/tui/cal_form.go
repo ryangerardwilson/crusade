@@ -534,17 +534,32 @@ func (m *calModel) commitRepeatForm(title string, start, end time.Time, freq, ur
 }
 
 func (m *calModel) commitThisRepeat(title string, start, end time.Time, url string, titleChanged, timesChanged bool) {
+	urlChanged := url != m.targetURL
+	if urlChanged {
+		if err := store.ApplyRepeatURL(m.dataPath, m.targetRepeatID, url); err != nil {
+			m.fail(err)
+			return
+		}
+	}
 	err := store.OverrideRepeatDay(m.dataPath, m.targetRepeatID, m.targetDay, title, start, end, url)
 	status := "Saved this event."
 	if titleChanged && !timesChanged {
 		status = "Renamed this event."
 	} else if timesChanged && !titleChanged {
 		status = "Rescheduled this event."
+	} else if urlChanged {
+		status = "Saved the meeting link."
 	}
 	m.finish(status, err, calPick{repeatID: m.targetRepeatID})
 }
 
 func (m *calModel) commitFollowingRepeat(title string, start, end time.Time, freq, url string, titleChanged, timesChanged, freqChanged, urlChanged bool) {
+	if urlChanged {
+		if err := store.ApplyRepeatURL(m.dataPath, m.targetRepeatID, url); err != nil {
+			m.fail(err)
+			return
+		}
+	}
 	name := m.targetSeriesTitle
 	if titleChanged {
 		name = title

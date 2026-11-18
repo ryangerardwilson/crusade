@@ -770,9 +770,9 @@ func TestCalMeetingURL(t *testing.T) {
 	}
 	m = keyCal(t, m, tea.KeyMsg{Type: tea.KeyCtrlH})
 	view = stripANSI(m.View())
-	if anyOf(!strings.Contains(view, "https://meet.example/stand"), strings.Contains(view, "https://meet.example/once")) {
+	if anyOf(!strings.Contains(view, "https://meet.example/once"), strings.Contains(view, "https://meet.example/stand")) {
 
-		t.Fatalf("series url stayed:\n%s", view)
+		t.Fatalf("url on every occurrence:\n%s", view)
 	}
 	m = keyCal(t, m, runeKey('e'))
 	m = setFormURL(t, m, "https://meet.example/next")
@@ -865,13 +865,13 @@ func TestCalOpenLinkUsesTheBrowser(t *testing.T) {
 	m = keyCal(t, m, runeKey('o'))
 	if anyOf(len(opened) != 4, opened[3] != "https://meet.example/once") {
 
-		t.Fatalf("override opened=%v err=%s", opened, m.errText)
+		t.Fatalf("edited occurrence opened=%v err=%s", opened, m.errText)
 	}
 	m = keyCal(t, m, tea.KeyMsg{Type: tea.KeyCtrlH})
 	m = keyCal(t, m, runeKey('o'))
-	if anyOf(len(opened) != 5, opened[4] != "https://meet.example/stand") {
+	if anyOf(len(opened) != 5, opened[4] != "https://meet.example/once") {
 
-		t.Fatalf("series link stayed opened=%v", opened)
+		t.Fatalf("url on every occurrence opened=%v", opened)
 	}
 
 	m = keyCal(t, m, runeKey('n'))

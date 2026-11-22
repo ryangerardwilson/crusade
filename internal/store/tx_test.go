@@ -1,6 +1,8 @@
 package store
 
 import (
+	"github.com/ryangerardwilson/crusade/internal/sqlite"
+
 	"testing"
 	"time"
 
@@ -47,7 +49,7 @@ func TestMakeRepeatFromMissingBlockWritesNothing(t *testing.T) {
 	}
 }
 
-func TestApplyURLWithDayOverrideIsOneWrite(t *testing.T) {
+func TestDayRenameWithURLMakesTheURLTheSeriesLink(t *testing.T) {
 	db := testDB(t)
 	repeat, err := model.NewRepeat("standup", "2026-11-02 09:00:00", "2026-11-02 10:00:00", "weekly")
 	if err != nil {
@@ -58,27 +60,29 @@ func TestApplyURLWithDayOverrideIsOneWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	nov9 := time.Date(2026, 11, 9, 0, 0, 0, 0, time.Local)
-	start := time.Date(2026, 11, 9, 9, 0, 0, 0, time.Local)
-	if err := OverrideRepeatDayAndURL(db, id, nov9, "review", start, start.Add(time.Hour), "https://meet.example/all"); err != nil {
+	form := model.CalForm{Title: "review", StartHour: 9, EndHour: 10, Freq: "weekly", URL: "https://meet.example/all", Scope: model.ScopeThis}
+	if _, err := SaveForm(db, FormTarget{RepeatID: id, Day: nov9}, form); err != nil {
 		t.Fatal(err)
 	}
 	repeats, err := LoadRepeats(db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if found, _ := findRepeat(repeats, id); found.Repeat.URL != "https://meet.example/all" {
-		t.Fatalf("series url = %q", found.Repeat.URL)
+	found, _ := findRepeat(repeats, id)
+	if found.Repeat.URL != "https://meet.example/all" || found.Repeat.Title != "standup" {
+		t.Fatalf("series = %#v", found.Repeat)
 	}
-	changes, err := LoadRepeatChanges(db)
-	if err != nil {
-		t.Fatal(err)
+	override, ok := found.OverrideOn(nov9)
+	if !ok || override.Title != "review" || override.URL != "" || override.HasClock() {
+		t.Fatalf("override = %#v", found.Overrides)
 	}
-	if change, ok := changeFor(changes, id, nov9); !ok || change.Title != "review" || change.URL != "https://meet.example/all" {
-		t.Fatalf("override = %#v", changes)
+	occurrence, ok := found.On(nov9)
+	if !ok || occurrence.Title != "review" || occurrence.URL != "https://meet.example/all" {
+		t.Fatalf("occurrence = %#v", occurrence)
 	}
 }
 
-func TestMetaSQLUpdatesOneRow(t *testing.T) {
+func TestInstallHasOneRow(t *testing.T) {
 	db := testDB(t)
 	for _, mode := range []string{model.ModeBox, model.ModeCal} {
 		if err := SaveLastMode(db, mode); err != nil {
@@ -88,8 +92,11 @@ func TestMetaSQLUpdatesOneRow(t *testing.T) {
 	var rows []struct {
 		N int `json:"n"`
 	}
-	if err := queryJSON(db, "SELECT COUNT(*) AS n FROM meta WHERE key = "+sqlString(lastModeKey), &rows); err != nil || len(rows) != 1 || rows[0].N != 1 {
-		t.Fatalf("meta rows = %#v %v", rows, err)
+	if err := sqlite.Query(db, "SELECT COUNT(*) AS n FROM install", &rows); err != nil || len(rows) != 1 || rows[0].N != 1 {
+		t.Fatalf("install rows = %#v %v", rows, err)
+	}
+	if err := execSQL(db, "INSERT INTO install(id) VALUES (2);\n"); err == nil {
+		t.Fatal("a second install row was stored")
 	}
 	if mode, err := LastMode(db); err != nil || mode != model.ModeCal {
 		t.Fatalf("last mode = %q %v", mode, err)

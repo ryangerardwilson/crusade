@@ -1,20 +1,14 @@
 package store
 
 import (
+	"github.com/ryangerardwilson/crusade/internal/sqlite"
+
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/ryangerardwilson/crusade/internal/model"
 )
-
-// Null url in block is a block with no meeting link.
-const blockModel = "model block\n" +
-	"  id integer primary key\n" +
-	"  title text not null\n" +
-	"  start_at text not null\n" +
-	"  end_at text not null\n" +
-	"  url text\n"
 
 // BlockRecord is one span of clock time. It is not a do task.
 type BlockRecord struct {
@@ -35,7 +29,7 @@ func LoadBlocks(dbPath string) ([]BlockRecord, error) {
 		return nil, err
 	}
 	var rows []blockRow
-	if err := queryJSON(dbPath, "SELECT id, title, start_at, end_at, url FROM block", &rows); err != nil {
+	if err := sqlite.Query(dbPath, "SELECT id, title, start_at, end_at, url FROM block", &rows); err != nil {
 		return nil, fmt.Errorf("failed to read blocks from %s: %w", dbPath, err)
 	}
 	blocks := make([]BlockRecord, 0, len(rows))
@@ -64,6 +58,7 @@ func LoadBlocks(dbPath string) ([]BlockRecord, error) {
 	return blocks, nil
 }
 
+// AddBlock stores a new block on the hour.
 func AddBlock(dbPath string, block model.Block) (int, error) {
 	if err := ensure(dbPath); err != nil {
 		return 0, err
@@ -72,23 +67,28 @@ func AddBlock(dbPath string, block model.Block) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	if err := block.OnTheHour(); err != nil {
+		return 0, err
+	}
 	if err := blockConflicts(dbPath, 0, block); err != nil {
 		return 0, err
 	}
-	id, err := nextBlockID(dbPath)
-	if err != nil {
+	var rows []struct {
+		ID int `json:"id"`
+	}
+	if err := sqlite.Query(dbPath, blockInsertSQL(block), &rows); err != nil {
 		return 0, err
 	}
-	if err := execSQL(dbPath, blockInsertSQL(id, block)); err != nil {
-		return 0, err
+	if len(rows) == 0 {
+		return 0, fmt.Errorf("%s: sqlite returned no id", dbPath)
 	}
-	return id, nil
+	published(dbPath)
+	return rows[0].ID, nil
 }
 
-func UpdateBlock(dbPath string, id int, block model.Block) error {
-	if err := ensure(dbPath); err != nil {
-		return err
-	}
+// updateBlock writes the block a form save decided on. model.EditBlock has
+// already applied the on-the-hour rule.
+func updateBlock(dbPath string, id int, block model.Block) error {
 	block, err := normalizeBlock(block)
 	if err != nil {
 		return err
@@ -96,28 +96,27 @@ func UpdateBlock(dbPath string, id int, block model.Block) error {
 	if err := blockConflicts(dbPath, id, block); err != nil {
 		return err
 	}
-	changed, err := rowsChanged(dbPath, blockUpdateSQL(id, block))
-	if err != nil {
-		return err
-	}
-	if !changed {
-		return fmt.Errorf("ID %d not found", id)
-	}
-	return nil
+	return changeOne(dbPath, blockUpdateSQL(id, block), id)
 }
 
 func DeleteBlock(dbPath string, id int) error {
 	if err := ensure(dbPath); err != nil {
 		return err
 	}
-	changed, err := rowsChanged(dbPath, "DELETE FROM block WHERE id = "+fmt.Sprintf("%d", id)+";\n")
+	return changeOne(dbPath, fmt.Sprintf("DELETE FROM block WHERE id = %d;\n", id), id)
+}
+
+func requireBlock(dbPath string, id int) (model.Block, error) {
+	blocks, err := LoadBlocks(dbPath)
 	if err != nil {
-		return err
+		return model.Block{}, err
 	}
-	if !changed {
-		return fmt.Errorf("ID %d not found", id)
+	for _, block := range blocks {
+		if block.ID == id {
+			return block.Block, nil
+		}
 	}
-	return nil
+	return model.Block{}, fmt.Errorf("ID %d not found", id)
 }
 
 func normalizeBlock(block model.Block) (model.Block, error) {
@@ -125,41 +124,31 @@ func normalizeBlock(block model.Block) (model.Block, error) {
 	if err != nil {
 		return model.Block{}, err
 	}
-	if err := next.OnTheHour(); err != nil {
-		return model.Block{}, err
-	}
 	next.URL = strings.TrimSpace(block.URL)
 	return next, nil
 }
 
-func nextBlockID(dbPath string) (int, error) {
-	var rows []struct {
-		N int `json:"n"`
-	}
-	if err := queryJSON(dbPath, "SELECT COALESCE(MAX(id), 0) AS n FROM block", &rows); err != nil {
-		return 0, err
-	}
-	if len(rows) == 0 {
-		return 1, nil
-	}
-	return rows[0].N + 1, nil
+func blockConflicts(dbPath string, id int, block model.Block) error {
+	probe := span{start: block.Start, end: block.End}
+	return spanConflicts(dbPath, []span{probe}, func(existing span) bool {
+		return id != 0 && existing.blockID == id
+	})
 }
 
-func blockInsertSQL(id int, block model.Block) string {
-	return fmt.Sprintf("INSERT INTO block(id, title, start_at, end_at, url) VALUES (%d, %s, %s, %s, %s);\n",
-		id,
-		sqlString(block.Title),
-		sqlString(block.Start.Format(model.DateTimeFormat)),
-		sqlString(block.End.Format(model.DateTimeFormat)),
+func blockInsertSQL(block model.Block) string {
+	return fmt.Sprintf("INSERT INTO block(title, start_at, end_at, url) VALUES (%s, %s, %s, %s) RETURNING id;\n",
+		sqlite.Quote(block.Title),
+		sqlite.Quote(block.Start.Format(model.DateTimeFormat)),
+		sqlite.Quote(block.End.Format(model.DateTimeFormat)),
 		storedURL(block.URL),
 	)
 }
 
 func blockUpdateSQL(id int, block model.Block) string {
 	return fmt.Sprintf("UPDATE block SET title = %s, start_at = %s, end_at = %s, url = %s WHERE id = %d;\n",
-		sqlString(block.Title),
-		sqlString(block.Start.Format(model.DateTimeFormat)),
-		sqlString(block.End.Format(model.DateTimeFormat)),
+		sqlite.Quote(block.Title),
+		sqlite.Quote(block.Start.Format(model.DateTimeFormat)),
+		sqlite.Quote(block.End.Format(model.DateTimeFormat)),
 		storedURL(block.URL),
 		id,
 	)

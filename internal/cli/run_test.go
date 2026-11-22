@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ryangerardwilson/crusade/internal/box"
 	"github.com/ryangerardwilson/crusade/internal/config"
 	"github.com/ryangerardwilson/crusade/internal/dofile"
 	"github.com/ryangerardwilson/crusade/internal/model"
@@ -34,6 +35,9 @@ func TestNoArgsMatchesHelp(t *testing.T) {
 	}
 	if !strings.Contains(help.String(), "open a mode:") || !strings.Contains(help.String(), "crusade -m box") || !strings.Contains(help.String(), "crusade -m align -r limit 10") || !strings.Contains(help.String(), "crusade -m do -c") || !strings.Contains(help.String(), "radial menu") && strings.Contains(help.String(), "do list") {
 		t.Fatalf("help output missing expected contract text:\n%s", help.String())
+	}
+	if !strings.Contains(help.String(), "The order is do, cal, box, nlp, align.") {
+		t.Fatalf("help output missing the radial order:\n%s", help.String())
 	}
 	if strings.Contains(help.String(), "\x1b") {
 		t.Fatalf("help output should be unstyled")
@@ -70,11 +74,7 @@ func TestConfigCreatesBootstrap(t *testing.T) {
 }
 
 func TestAddListEditDeleteFlow(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("SQLX_ROOT", filepath.Join(home, "sqlx"))
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	testHome(t)
 	nowFunc = func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.Local) }
 	defer func() { nowFunc = time.Now }()
 
@@ -148,7 +148,7 @@ func TestAlignEditorUsesYAML(t *testing.T) {
 		t.Fatalf("opened yaml:\n%s", text)
 	}
 	records, err := store.Load(store.DatabasePath())
-	if err != nil || len(records) != 1 || records[0].Event.Y != "wrote the note" || records[0].Event.X.Format("2006-01-02") != "2026-04-02" {
+	if err != nil || len(records) != 1 || records[0].Align.Y != "wrote the note" || records[0].Align.X.Format("2006-01-02") != "2026-04-02" {
 		t.Fatalf("saved %#v err=%v", records, err)
 	}
 }
@@ -174,90 +174,186 @@ func TestUpgradeUsesOverrideScript(t *testing.T) {
 	}
 }
 
-func TestListAndEditStayOnThinkRecords(t *testing.T) {
+func testHome(t *testing.T) string {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("SQLX_ROOT", filepath.Join(home, "sqlx"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	t.Setenv("SQLX_ROOT", filepath.Join(home, "sqlx"))
+	t.Setenv("BOXES_CONFIG", filepath.Join(home, "missing-outline.txt"))
+	return home
+}
+
+func runOut(t *testing.T, args ...string) (int, string) {
+	t.Helper()
+	var out bytes.Buffer
+	code := Run(args, &out, &bytes.Buffer{})
+	return code, out.String()
+}
+
+func TestAlignListAndEditKeepRecords(t *testing.T) {
+	testHome(t)
 	nowFunc = func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.Local) }
 	defer func() { nowFunc = time.Now }()
 
-	think, err := model.NewEvent("2026-02-01 00:00:00", "ship the patch", "reduce drift")
-	if err != nil {
-		t.Fatal(err)
-	}
-	do, err := model.NewDoEvent("2026-02-02 23:59:59", "mail the letter")
-	if err != nil {
-		t.Fatal(err)
-	}
 	path := store.DatabasePath()
-	if err := store.Save(path, []store.Record{{ID: 1, Event: think}, {ID: 2, Event: do}}); err != nil {
+	if _, err := store.Open(path); err != nil {
 		t.Fatal(err)
 	}
+	think, err := model.NewAlign("2026-02-01 00:00:00", "ship the patch", "reduce drift")
+	if err != nil {
+		t.Fatal(err)
+	}
+	past, err := model.NewAlign("2025-12-01", "old outcome", "gone by")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []model.Align{think, past} {
+		if err := store.Add(path, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if code, list := runOut(t, "-m", "align", "-r"); code != 0 || !strings.Contains(list, "ship the patch") || strings.Contains(list, "old outcome") || !strings.Contains(list, "crusade align items (1)") {
+		t.Fatalf("list code=%d:\n%s", code, list)
+	}
+	if code, out := runOut(t, "-m", "align", "-u", "9", "y", "changed"); code == 0 || !strings.Contains(out, "ID 9 not found") {
+		t.Fatalf("missing id code=%d output=%q", code, out)
+	}
+	if code, out := runOut(t, "-m", "align", "-u", "1", "z", ""); code == 0 || !strings.Contains(out, "impact") {
+		t.Fatalf("empty z edit code=%d output=%q", code, out)
+	}
+	if code, again := runOut(t, "-m", "align", "-r"); code != 0 || !strings.Contains(again, "reduce drift") {
+		t.Fatalf("align impact was cleared:\n%s", again)
+	}
+	if code, out := runOut(t, "list", "outcomes"); code == 0 || !strings.Contains(out, "Unknown command") {
+		t.Fatalf("old list command code=%d output=%q", code, out)
+	}
+}
 
-	var list bytes.Buffer
-	if code := Run([]string{"-m", "align", "-r"}, &list, &bytes.Buffer{}); code != 0 {
-		t.Fatalf("list code = %d output=%q", code, list.String())
+func seedDoList(t *testing.T, text string) string {
+	t.Helper()
+	db := store.DatabasePath()
+	if _, err := store.Open(db); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(list.String(), "ship the patch") || strings.Contains(list.String(), "mail the letter") || !strings.Contains(list.String(), "crusade align items (1)") {
-		t.Fatalf("list mixed modes:\n%s", list.String())
+	if err := store.ReplaceDoList(db, model.ParseDoList(text)); err != nil {
+		t.Fatal(err)
 	}
+	return db
+}
 
-	var edited bytes.Buffer
-	if code := Run([]string{"-m", "align", "-u", "2", "y", "changed"}, &edited, &bytes.Buffer{}); code == 0 {
-		t.Fatalf("edit do task succeeded: %s", edited.String())
+func loadDoText(t *testing.T, db string) ([]model.DoItem, string) {
+	t.Helper()
+	rows, err := store.LoadDoList(db)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(edited.String(), "do record") {
-		t.Fatalf("edit do task output = %q", edited.String())
-	}
+	return rows, model.RenderDoList(rows)
+}
 
-	var cleared bytes.Buffer
-	if code := Run([]string{"-m", "align", "-u", "1", "z", ""}, &cleared, &bytes.Buffer{}); code == 0 || !strings.Contains(cleared.String(), "impact") {
-		t.Fatalf("empty z edit code=%d output=%q", code, cleared.String())
+func TestDoCreateAppendsAnItem(t *testing.T) {
+	testHome(t)
+	db := seedDoList(t, "# Work\n\n- mail the letter\n")
+	if code, out := runOut(t, "-m", "do", "-c", "write the note"); code != 0 || out != "" {
+		t.Fatalf("create code=%d output=%q", code, out)
 	}
-	var again bytes.Buffer
-	if code := Run([]string{"-m", "align", "-r"}, &again, &bytes.Buffer{}); code != 0 || !strings.Contains(again.String(), "reduce drift") {
-		t.Fatalf("think impact was cleared:\n%s", again.String())
+	rows, text := loadDoText(t, db)
+	if text != "# Work\n\n- mail the letter\n- write the note\n" || rows[3].Kind != model.DoKindItem || rows[3].ID == 0 {
+		t.Fatalf("rows = %#v", rows)
 	}
+	if code, out := runOut(t, "-m", "do", "-c", " "); code == 0 || !strings.Contains(out, "outcome cannot be empty") {
+		t.Fatalf("empty create code=%d output=%q", code, out)
+	}
+	if code, out := runOut(t, "-m", "do", "-c", "a", "b"); code == 0 || !strings.Contains(out, "Usage: crusade -m do -c") {
+		t.Fatalf("two args code=%d output=%q", code, out)
+	}
+}
 
-	var doList bytes.Buffer
-	if code := Run([]string{"-m", "do", "-r"}, &doList, &bytes.Buffer{}); code != 0 {
-		t.Fatalf("do list code = %d output=%q", code, doList.String())
+func TestDoReadPrintsEveryRowWithItsID(t *testing.T) {
+	testHome(t)
+	db := seedDoList(t, "# Work\n\n- mail the letter\n")
+	if code, _ := runOut(t, "-m", "do", "-c", "x"); code != 0 {
+		t.Fatal(code)
 	}
-	if !strings.Contains(doList.String(), "mail the letter") || strings.Contains(doList.String(), "ship the patch") || !strings.Contains(doList.String(), "crusade do items (1)") {
-		t.Fatalf("do list mixed modes:\n%s", doList.String())
+	rows, _ := loadDoText(t, db)
+	code, out := runOut(t, "-m", "do", "-r")
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if code != 0 || len(lines) != 6 || lines[0] != "crusade do items (2)" || lines[1] != strings.Repeat("-", len(lines[0])) {
+		t.Fatalf("read code=%d:\n%s", code, out)
 	}
-	var updateWrong bytes.Buffer
-	if code := Run([]string{"-m", "do", "-u", "1", "nope"}, &updateWrong, &bytes.Buffer{}); code == 0 || !strings.Contains(updateWrong.String(), "align record") {
-		t.Fatalf("do update align code=%d output=%q", code, updateWrong.String())
+	for index, row := range rows {
+		want := strconv.Itoa(row.ID) + "  " + row.Line()
+		if got := strings.TrimLeft(lines[index+2], " "); got != want {
+			t.Fatalf("line %d = %q want %q", index, got, want)
+		}
 	}
-	var deleteWrong bytes.Buffer
-	if code := Run([]string{"-m", "do", "-d", "1"}, &deleteWrong, &bytes.Buffer{}); code == 0 || !strings.Contains(deleteWrong.String(), "align record") {
-		t.Fatalf("do delete align code=%d output=%q", code, deleteWrong.String())
+	if !strings.HasSuffix(lines[5], strconv.Itoa(rows[3].ID)+"  - x") {
+		t.Fatalf("appended line = %q", lines[5])
 	}
-	var deleteDo bytes.Buffer
-	if code := Run([]string{"-m", "align", "-d", "2"}, &deleteDo, &bytes.Buffer{}); code == 0 || !strings.Contains(deleteDo.String(), "do record") {
-		t.Fatalf("align delete do code=%d output=%q", code, deleteDo.String())
+	if code, limited := runOut(t, "-m", "do", "-r", "limit", "1"); code != 0 || strings.Contains(limited, "mail the letter") || !strings.Contains(limited, "# Work") {
+		t.Fatalf("limited code=%d:\n%s", code, limited)
 	}
-	var updated bytes.Buffer
-	if code := Run([]string{"-m", "do", "-u", "2", "sent the letter", "2026-06-13"}, &updated, &bytes.Buffer{}); code != 0 {
-		t.Fatalf("do update code=%d output=%q", code, updated.String())
+}
+
+func TestDoReadEmptyList(t *testing.T) {
+	testHome(t)
+	if code, out := runOut(t, "-m", "do", "-r"); code != 0 || !strings.Contains(out, "crusade do items (0)") || !strings.Contains(out, "No items.") {
+		t.Fatalf("empty code=%d:\n%s", code, out)
 	}
-	var created bytes.Buffer
-	if code := Run([]string{"-m", "do", "-c", "write the note"}, &created, &bytes.Buffer{}); code != 0 {
-		t.Fatalf("do create code=%d output=%q", code, created.String())
+}
+
+func TestDoUpdateKeepsIDAndPlace(t *testing.T) {
+	testHome(t)
+	db := seedDoList(t, "# Work\n\n- mail the letter\n- call mum\n")
+	before, _ := loadDoText(t, db)
+	item := strconv.Itoa(before[2].ID)
+	if code, out := runOut(t, "-m", "do", "-u", item, "sent the letter"); code != 0 {
+		t.Fatalf("update code=%d output=%q", code, out)
 	}
-	var after bytes.Buffer
-	if code := Run([]string{"-m", "do", "-r"}, &after, &bytes.Buffer{}); code != 0 {
-		t.Fatalf("do list after = %d", code)
+	heading := strconv.Itoa(before[0].ID)
+	if code, out := runOut(t, "-m", "do", "-u", heading, "## Plan"); code != 0 {
+		t.Fatalf("heading code=%d output=%q", code, out)
 	}
-	if !strings.Contains(after.String(), "sent the letter") || !strings.Contains(after.String(), "2026-06-13 23:59:59") || !strings.Contains(after.String(), "write the note") || !strings.Contains(after.String(), "2026-01-01 23:59:59") {
-		t.Fatalf("do records:\n%s", after.String())
+	after, text := loadDoText(t, db)
+	if text != "## Plan\n\n- sent the letter\n- call mum\n" || after[2].ID != before[2].ID {
+		t.Fatalf("after = %#v", after)
 	}
-	var old bytes.Buffer
-	if code := Run([]string{"list", "outcomes"}, &old, &bytes.Buffer{}); code == 0 || !strings.Contains(old.String(), "Unknown command") {
-		t.Fatalf("old list command code=%d output=%q", code, old.String())
+	if code, out := runOut(t, "-m", "do", "-u", heading, "Plan"); code == 0 || !strings.Contains(out, "starts with #") {
+		t.Fatalf("bad heading code=%d output=%q", code, out)
+	}
+	if code, out := runOut(t, "-m", "do", "-u", strconv.Itoa(before[1].ID), "text"); code == 0 || !strings.Contains(out, "blank line") {
+		t.Fatalf("blank code=%d output=%q", code, out)
+	}
+	if code, out := runOut(t, "-m", "do", "-u", "99", "x"); code == 0 || !strings.Contains(out, "ID 99 not found") {
+		t.Fatalf("missing code=%d output=%q", code, out)
+	}
+	if code, out := runOut(t, "-m", "do", "-u", item); code == 0 || !strings.Contains(out, "Usage: crusade -m do -u <id> <text>") {
+		t.Fatalf("usage code=%d output=%q", code, out)
+	}
+}
+
+func TestDoDeleteCountsTheWeek(t *testing.T) {
+	testHome(t)
+	db := seedDoList(t, "# Work\n- mail the letter\n- call mum\n")
+	before, _ := loadDoText(t, db)
+	if code, out := runOut(t, "-m", "do", "-d", strconv.Itoa(before[1].ID)); code != 0 {
+		t.Fatalf("delete code=%d output=%q", code, out)
+	}
+	if code, out := runOut(t, "-m", "do", "-d", strconv.Itoa(before[0].ID)); code != 0 {
+		t.Fatalf("heading delete code=%d output=%q", code, out)
+	}
+	if _, text := loadDoText(t, db); text != "- call mum\n" {
+		t.Fatalf("after = %q", text)
+	}
+	count, err := store.DeletedThisWeek(db, time.Now())
+	if err != nil || count != 1 {
+		t.Fatalf("deleted this week = %d err=%v", count, err)
+	}
+	if code, out := runOut(t, "-m", "do", "-d", "99"); code == 0 || !strings.Contains(out, "ID 99 not found") {
+		t.Fatalf("missing code=%d output=%q", code, out)
+	}
+	if code, out := runOut(t, "-m", "do", "-d", "x"); code == 0 || !strings.Contains(out, "ID must be an integer") {
+		t.Fatalf("bad id code=%d output=%q", code, out)
 	}
 }
 
@@ -283,7 +379,7 @@ func TestBoxCreateAndUpdateEditAllBoxesInYAML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	email, ok := outline.ItemByID("work/email")
+	email, ok := boxAt(outline, "work/email")
 	if !ok || email.Label != "Email" {
 		t.Fatalf("email = %#v ok=%v", email, ok)
 	}
@@ -297,10 +393,10 @@ func TestBoxCreateAndUpdateEditAllBoxesInYAML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := outline.ItemByID("work/email"); ok {
+	if _, ok := boxAt(outline, "work/email"); ok {
 		t.Fatal("replaced outline kept the old box")
 	}
-	if _, ok := outline.ItemByID("plan"); !ok {
+	if _, ok := boxAt(outline, "plan"); !ok {
 		t.Fatal("missing plan")
 	}
 
@@ -318,7 +414,7 @@ func TestBoxCreateAndUpdateEditAllBoxesInYAML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := outline.ItemByID("plan"); !ok || len(outline.Flatten()) != 1 {
+	if _, ok := boxAt(outline, "plan"); !ok || len(outline.Flatten()) != 1 {
 		t.Fatal("invalid yaml changed the outline")
 	}
 }
@@ -350,7 +446,7 @@ func TestOpenUsesTheRadial(t *testing.T) {
 		}
 		return "", nil
 	}
-	runTUI = func(dataPath, mode string, stdout, stderr io.Writer) int {
+	runTUI = func(dataPath, mode string, stdout, stderr io.Writer) tui.Result {
 		if dataPath != db {
 			t.Fatalf("data path = %s", dataPath)
 		}
@@ -358,7 +454,7 @@ func TestOpenUsesTheRadial(t *testing.T) {
 			t.Fatal(err)
 		}
 		opened = append(opened, mode)
-		return 0
+		return tui.Result{}
 	}
 	openDoFile = func(string) error {
 		t.Fatal("do file")
@@ -404,9 +500,9 @@ func TestOpenReturnsToTheRadialAfterDo(t *testing.T) {
 		doOpened = true
 		return nil
 	}
-	runTUI = func(string, string, io.Writer, io.Writer) int {
+	runTUI = func(string, string, io.Writer, io.Writer) tui.Result {
 		t.Fatal("tui")
-		return 1
+		return tui.Result{Code: 1}
 	}
 	if code := Run([]string{"open"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 || !doOpened || strings.Join(prefs, ",") != model.ModeCal+","+model.ModeDo {
 		t.Fatalf("code=%d do=%v prefs=%v", code, doOpened, prefs)
@@ -427,16 +523,14 @@ func TestOpenLinkClosesInsteadOfReturning(t *testing.T) {
 	t.Cleanup(func() {
 		pickMode = previousPick
 		runTUI = previousTUI
-		tui.ExitAfterMode = false
 	})
 	calls := 0
 	pickMode = func(string) (string, error) {
 		calls++
 		return model.ModeCal, nil
 	}
-	runTUI = func(string, string, io.Writer, io.Writer) int {
-		tui.ExitAfterMode = true
-		return 0
+	runTUI = func(string, string, io.Writer, io.Writer) tui.Result {
+		return tui.Result{Closed: true}
 	}
 	if code := Run([]string{"open"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 || calls != 1 {
 		t.Fatalf("code=%d calls=%d", code, calls)
@@ -513,61 +607,123 @@ func openTestPTY(t *testing.T) (*os.File, *os.File) {
 	return master, slave
 }
 
-func TestDoModeOpensTheListFile(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
-	t.Setenv("SQLX_ROOT", filepath.Join(home, "sqlx"))
-	t.Setenv("BOXES_CONFIG", filepath.Join(home, "missing-outline.txt"))
-	t.Setenv("VISUAL", "nvim")
-	t.Setenv("EDITOR", "nvim")
-	logPath := filepath.Join(home, "editor.log")
+// stubVim makes dofile.VimArgs a script that logs the path it opens, copies
+// that file to opened, and writes the file next over it when next exists.
+func stubVim(t *testing.T, home string) (logPath, opened, next string) {
+	t.Helper()
+	logPath = filepath.Join(home, "editor.log")
+	opened = filepath.Join(home, "opened")
+	next = filepath.Join(home, "next")
 	editor := filepath.Join(home, "editor")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '" + logPath + "'\n"
+	script := "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '" + logPath + "'\ncp \"$1\" '" + opened + "'\n" +
+		"if [ -f '" + next + "' ]; then cp '" + next + "' \"$1\"; fi\n"
 	if err := os.WriteFile(editor, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	previous := dofile.VimArgs
 	dofile.VimArgs = []string{editor}
 	t.Cleanup(func() { dofile.VimArgs = previous })
-	if code := Run([]string{"-m", "do", "-c", "mail the letter"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+	return logPath, opened, next
+}
+
+func readText(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func TestDoModeOpensTheListFile(t *testing.T) {
+	home := testHome(t)
+	t.Setenv("VISUAL", "nvim")
+	t.Setenv("EDITOR", "nvim")
+	logPath, opened, next := stubVim(t, home)
+	db := seedDoList(t, "# Work\n\n- mail the letter\n")
+	before, _ := loadDoText(t, db)
+	saved := "# Work\n\n- sent the letter\n\n## Home\n- call mum\n"
+	if err := os.WriteFile(next, []byte(saved), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := runOut(t, "-m", "do"); code != 0 {
+		t.Fatalf("open code=%d out=%s", code, out)
+	}
+	listPath := config.DoPath()
+	if listPath != filepath.Join(home, "config", "crusade", "do") {
+		t.Fatalf("do path = %s", listPath)
+	}
+	if got := readText(t, opened); got != "# Work\n\n- mail the letter\n" {
+		t.Fatalf("vim opened %q", got)
+	}
+	rows, text := loadDoText(t, db)
+	if text != saved || rows[0].ID != before[0].ID || rows[2].ID != before[2].ID {
+		t.Fatalf("stored rows = %#v", rows)
+	}
+	if mode, err := store.LastMode(db); err != nil || mode != model.ModeDo {
+		t.Fatalf("last mode = %q err=%v", mode, err)
+	}
+	if strings.Count(readText(t, logPath), listPath) != 1 {
+		t.Fatalf("editor log = %q", readText(t, logPath))
+	}
+}
+
+func TestDoModeRewritesTheFileFromRows(t *testing.T) {
+	home := testHome(t)
+	logPath, opened, _ := stubVim(t, home)
+	db := seedDoList(t, "# Work\n- mail the letter\n")
+	listPath := config.DoPath()
+	if err := os.MkdirAll(filepath.Dir(listPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(listPath, []byte("stale text\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := runOut(t, "-m", "do", "-c", "second item"); code != 0 {
 		t.Fatal(code)
 	}
-	var out bytes.Buffer
-	if code := Run([]string{"-m", "do"}, &out, &bytes.Buffer{}); code != 0 {
-		t.Fatalf("open code=%d out=%s", code, out.String())
+	if code, out := runOut(t, "-m", "do"); code != 0 {
+		t.Fatalf("open code=%d out=%s", code, out)
 	}
-	listPath := filepath.Join(home, "config", "crusade", "do")
-	body, err := os.ReadFile(listPath)
-	if err != nil {
+	want := "# Work\n- mail the letter\n- second item\n"
+	if got := readText(t, opened); got != want {
+		t.Fatalf("vim opened %q", got)
+	}
+	if _, text := loadDoText(t, db); text != want {
+		t.Fatalf("rows changed: %q", text)
+	}
+	if strings.Count(readText(t, logPath), listPath) != 1 {
+		t.Fatalf("editor log = %q", readText(t, logPath))
+	}
+}
+
+func TestDoModeFailedVimKeepsRows(t *testing.T) {
+	home := testHome(t)
+	editor := filepath.Join(home, "fail")
+	script := "#!/bin/sh\nprintf 'junk\\n' > \"$1\"\nexit 3\n"
+	if err := os.WriteFile(editor, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if string(body) != "mail the letter\n" {
-		t.Fatalf("list = %q", body)
+	previous := dofile.VimArgs
+	dofile.VimArgs = []string{editor}
+	t.Cleanup(func() { dofile.VimArgs = previous })
+	db := seedDoList(t, "# Work\n- mail the letter\n")
+	if code, _ := runOut(t, "-m", "do"); code != 3 {
+		t.Fatalf("failed vim code = %d", code)
 	}
-	if err := os.WriteFile(listPath, []byte("keep this\n- grouped\n"), 0o644); err != nil {
-		t.Fatal(err)
+	if _, text := loadDoText(t, db); text != "# Work\n- mail the letter\n" {
+		t.Fatalf("rows changed: %q", text)
 	}
-	if code := Run([]string{"-m", "do", "-c", "second item"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
-		t.Fatal(code)
+}
+
+func boxAt(outline box.Outline, path string) (box.FlatItem, bool) {
+	flat := outline.Flatten()
+	for index, p := range outline.Paths() {
+		if p == path {
+			return flat[index], true
+		}
 	}
-	if code := Run([]string{"-m", "do"}, &out, &bytes.Buffer{}); code != 0 {
-		t.Fatalf("second open code=%d out=%s", code, out.String())
-	}
-	body, err = os.ReadFile(listPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(body) != "keep this\n- grouped\n" {
-		t.Fatalf("list rewritten:\n%s", body)
-	}
-	logged, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Count(string(logged), listPath) != 2 {
-		t.Fatalf("editor log = %q", logged)
-	}
+	return box.FlatItem{}, false
 }
 
 func writeBoxEditor(t *testing.T, path, document string) {

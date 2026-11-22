@@ -16,57 +16,48 @@ import (
 
 // calModel blocks clock time. A row is one block or one day of a repeating series.
 type calModel struct {
-	dataPath          string
-	blocks            []store.BlockRecord
-	repeats           []store.RepeatRecord
-	changes           []store.RepeatChange
-	day               time.Time
-	selected          int
-	showHelp          bool
-	composing         bool
-	composeKind       string
-	composeText       string
-	composeCursor     int
-	pendingDelete     bool
-	scope             string
-	scopeChoice       string
-	targetBlockID     int
-	targetRepeatID    int
-	targetDay         time.Time
-	targetStart       time.Time
-	targetEnd         time.Time
-	targetTitle       string
-	targetFreq        string
-	targetSeriesStart time.Time
-	targetSeriesEnd   time.Time
-	targetSeriesTitle string
-	targetUntil       time.Time
-	targetURL         string
-	targetSeriesURL   string
-	status            string
-	errText           string
-	width             int
-	height            int
-	memory            modeMemory
-	cursor            time.Time
-	anchor            time.Time
-	visual            bool
-	spanSet           bool
-	spanStart         time.Time
-	spanEnd           time.Time
-	formField         int
-	formStart         string
-	formStartCursor   int
-	formEnd           string
-	formEndCursor     int
-	formURL           string
-	formURLCursor     int
-	formRepeat        int
-	formApply         int
-	formDayMask       uint8
-	formDayCursor     int
-	formHasApply      bool
-	formEditing       bool
+	dataPath       string
+	blocks         []store.BlockRecord
+	repeats        []store.RepeatRecord
+	day            time.Time
+	selected       int
+	showHelp       bool
+	composing      bool
+	composeKind    string
+	composeText    string
+	composeCursor  int
+	pendingDelete  bool
+	scope          string
+	scopeChoice    string
+	targetBlockID  int
+	targetRepeatID int
+	targetDay      time.Time
+	status         string
+	errText        string
+	width          int
+	height         int
+	memory         modeMemory
+	// closed: opening a meeting link from the Super+C window closes crusade.
+	closed          bool
+	cursor          time.Time
+	anchor          time.Time
+	visual          bool
+	spanSet         bool
+	spanStart       time.Time
+	spanEnd         time.Time
+	formField       int
+	formStart       string
+	formStartCursor int
+	formEnd         string
+	formEndCursor   int
+	formURL         string
+	formURLCursor   int
+	formRepeat      int
+	formApply       int
+	formDayMask     uint8
+	formDayCursor   int
+	formHasApply    bool
+	formEditing     bool
 }
 
 type calItem struct {
@@ -86,19 +77,14 @@ type calPick struct {
 	repeatID int
 }
 
-func runCal(dataPath string, stdout, stderr io.Writer) int {
+func runCal(dataPath string, stdout, stderr io.Writer) Result {
 	_ = stdout
 	model := newCalModel(dataPath, nil)
 	if err := model.reload(); err != nil {
 		fmt.Fprintln(stderr, err)
-		return 1
+		return Result{Code: 1}
 	}
-	program := tea.NewProgram(model, tea.WithAltScreen())
-	if _, err := program.Run(); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	return 0
+	return runProgram(model, stderr)
 }
 
 func newCalModel(dataPath string, blocks []store.BlockRecord) calModel {
@@ -115,6 +101,10 @@ func openCal(dataPath string, width, height int, mem modeMemory) (tea.Model, tea
 		saved.width = width
 		saved.height = height
 		saved.memory = mem
+		// The kept screen is a cache: reload it from the store.
+		if err := saved.reload(); err != nil {
+			saved.errText = err.Error()
+		}
 		rememberMode(dataPath, model.ModeCal)
 		return saved, nil
 	}
@@ -229,13 +219,17 @@ func (m calModel) handleCalGridKey(key string) (tea.Model, tea.Cmd) {
 		m.deleteSelected()
 	case "o":
 		if m.openSelected() {
-			ExitAfterMode = true
+			m.closed = true
 			return m, tea.Quit
 		}
 	default:
 		m.pendingDelete = false
 	}
 	return m, nil
+}
+
+func (m calModel) closedCrusade() bool {
+	return m.closed
 }
 
 func (m calModel) cycleMode() (tea.Model, tea.Cmd) {
@@ -381,34 +375,19 @@ func (m calModel) itemsOn(day time.Time) []calItem {
 		})
 	}
 	for _, repeat := range m.repeats {
-		if !repeat.Repeat.OccursOn(day) {
+		occurrence, ok := repeat.On(day)
+		if !ok {
 			continue
-		}
-		change, ok := changeOn(m.changes, repeat.ID, day)
-		if ok && change.Skipped {
-			continue
-		}
-		title := repeat.Repeat.Title
-		start, end := repeat.Repeat.SpanOn(day)
-		url := repeat.Repeat.URL
-		overridden := false
-		if ok {
-			title = change.Title
-			start, end = change.Start, change.End
-			if change.HasURL {
-				url = change.URL
-			}
-			overridden = true
 		}
 		items = append(items, calItem{
 			repeatID:   repeat.ID,
 			day:        day,
-			title:      title,
-			start:      start,
-			end:        end,
+			title:      occurrence.Title,
+			start:      occurrence.Start,
+			end:        occurrence.End,
 			freq:       repeat.Repeat.Freq,
-			url:        url,
-			overridden: overridden,
+			url:        occurrence.URL,
+			overridden: occurrence.Overridden,
 		})
 	}
 	sort.SliceStable(items, func(i, j int) bool {
@@ -421,15 +400,6 @@ func (m calModel) itemsOn(day time.Time) []calItem {
 		return items[i].start.Before(items[j].start)
 	})
 	return items
-}
-
-func changeOn(changes []store.RepeatChange, id int, day time.Time) (store.RepeatChange, bool) {
-	for _, change := range changes {
-		if change.RepeatID == id && sameDate(change.Day, day) {
-			return change, true
-		}
-	}
-	return store.RepeatChange{}, false
 }
 
 func (m *calModel) moveDay(delta int) {
@@ -484,31 +454,6 @@ func (m *calModel) capture(item calItem) {
 	m.targetBlockID = item.blockID
 	m.targetRepeatID = item.repeatID
 	m.targetDay = item.day
-	m.targetStart = item.start
-	m.targetEnd = item.end
-	m.targetTitle = item.title
-	m.targetFreq = item.freq
-	m.targetURL = item.url
-	m.targetSeriesStart = time.Time{}
-	m.targetSeriesEnd = time.Time{}
-	m.targetSeriesTitle = ""
-	m.targetSeriesURL = ""
-	m.targetUntil = time.Time{}
-	if item.repeatID == 0 {
-		return
-	}
-	for _, repeat := range m.repeats {
-		if repeat.ID != item.repeatID {
-			continue
-		}
-		m.targetSeriesStart = repeat.Repeat.Start
-		m.targetSeriesEnd = repeat.Repeat.End
-		m.targetSeriesTitle = repeat.Repeat.Title
-		m.targetSeriesURL = repeat.Repeat.URL
-		m.targetUntil = repeat.Repeat.Until
-		m.targetFreq = repeat.Repeat.Freq
-		return
-	}
 }
 
 func (m *calModel) clearScope() {
@@ -538,24 +483,26 @@ func (m *calModel) handleComposeKey(key string) {
 }
 
 func (m *calModel) applyDelete(choice string) {
-	var err error
-	status := ""
+	scope := scopeOf(choice)
+	status := map[model.Scope]string{
+		model.ScopeThis:      "Removed this event.",
+		model.ScopeFollowing: "Deleted this and following.",
+		model.ScopeAll:       "Deleted all events.",
+	}[scope]
+	err := store.DeleteOccurrence(m.dataPath, m.targetRepeatID, m.targetDay, scope)
+	m.finish(status, err, calPick{})
+}
+
+// scopeOf reads the o, f, and a choices.
+func scopeOf(choice string) model.Scope {
 	switch choice {
 	case "o":
-		err = store.SkipRepeatDay(m.dataPath, m.targetRepeatID, m.targetDay)
-		status = "Removed this event."
+		return model.ScopeThis
 	case "f":
-		if sameDate(m.targetSeriesStart, m.targetDay) {
-			err = store.DeleteRepeat(m.dataPath, m.targetRepeatID)
-		} else {
-			err = store.SetRepeatUntil(m.dataPath, m.targetRepeatID, m.targetDay.AddDate(0, 0, -1))
-		}
-		status = "Deleted this and following."
+		return model.ScopeFollowing
 	default:
-		err = store.DeleteRepeat(m.dataPath, m.targetRepeatID)
-		status = "Deleted all events."
+		return model.ScopeAll
 	}
-	m.finish(status, err, calPick{})
 }
 
 func (m *calModel) deleteSelected() {
@@ -618,13 +565,8 @@ func (m *calModel) reload() error {
 	if err != nil {
 		return err
 	}
-	changes, err := store.LoadRepeatChanges(m.dataPath)
-	if err != nil {
-		return err
-	}
 	m.blocks = blocks
 	m.repeats = repeats
-	m.changes = changes
 	m.clamp()
 	return nil
 }

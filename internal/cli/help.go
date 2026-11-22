@@ -25,9 +25,8 @@ open a mode:
   crusade -m cal
   crusade -m nlp
 
-  The do list is $XDG_CONFIG_HOME/crusade/do, or ~/.config/crusade/do.
-  The first open lists each do outcome on its own line.
-  Later opens keep the file as you left it.
+  The do list lives in the crusade database: headings (# lines), blank lines, and items (- lines).
+  Each open writes it to $XDG_CONFIG_HOME/crusade/do, or ~/.config/crusade/do, for vim, and saves what vim leaves there.
   In the TUI, tab cycles align, box, cal, and nlp. ? toggles a shortcuts modal.
   Align is a list. Cal blocks time on an hour grid and has no -c, -r, -u, or -d. The week is an hour sheet sized to the screen. The focus box shows the block under the cursor. o opens its meeting link in the browser. From the Super+C window, that also closes crusade. j and k move one hour at a time. A block starts and ends on the hour. A meeting already off the hour keeps that time when its clock is left unchanged. v selects a span. n and e open a form for the title, the start, the end, an optional meeting url, and the repeat. days repeats on chosen weekdays. On a repeat, the form applies to this event, this and following, or all events. A meeting url applies to every occurrence. d uses o, f, and a the same way.
 
@@ -39,13 +38,12 @@ records, one mode and one operation:
   -m do|align|box
   -c create   -r read   -u update   -d delete
 
-  do tasks store an outcome and a day
-  # crusade -m do -c <outcome> [when]
+  do rows are the lines of the do list. -c adds an item at the end. -r lists every row with its id.
+  # crusade -m do -c <outcome>
   crusade -m do -c "mail the letter"
-  crusade -m do -c "mail the letter" 2026-06-13
   # crusade -m do -r [limit <count>]
   crusade -m do -r limit 10
-  # crusade -m do -u <id> <outcome> [when]
+  # crusade -m do -u <id> <text>
   crusade -m do -u 3 "mail the letter"
   # crusade -m do -d <id>
   crusade -m do -d 3

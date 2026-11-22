@@ -3,7 +3,6 @@ package tui
 import (
 	"errors"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,18 +13,12 @@ import (
 )
 
 func TestCalBlocksTimeApartFromDoTasks(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("SQLX_ROOT", root)
-	t.Setenv("BOXES_CONFIG", filepath.Join(t.TempDir(), "missing.txt"))
+	isolateSQLX(t)
 	db := store.DatabasePath()
-	do, err := model.NewDoEvent("2026-11-02 23:59:59", "mail the letter")
-	if err != nil {
+	if _, err := store.AddDoItem(db, 0, "mail the letter"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Add(db, do); err != nil {
-		t.Fatal(err)
-	}
-	align, err := model.NewEvent("2026-11-02 23:59:59", "ship the patch", "reduce drift")
+	align, err := model.NewAlign("2026-11-02 23:59:59", "ship the patch", "reduce drift")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,8 +64,8 @@ func TestCalBlocksTimeApartFromDoTasks(t *testing.T) {
 	}
 	got = setForm(t, got, "deep work", "09:00", "10:00", "", "")
 	got = keyCal(t, got, tea.KeyMsg{Type: tea.KeyEnter})
-	if got.composing {
-		t.Fatalf("save composing err=%s", got.errText)
+	if anyOf(got.composing, got.status != "Blocked deep work.") {
+		t.Fatalf("save composing=%v status=%q err=%s", got.composing, got.status, got.errText)
 	}
 	view := stripANSI(got.View())
 	if anyOf(!strings.Contains(view, "CAL"), !strings.Contains(view, "09:00-10:00"), !strings.Contains(view, "deep work"), strings.Contains(view, "mail the letter"), strings.Contains(view, "ship the patch")) {
@@ -125,9 +118,14 @@ func TestCalBlocksTimeApartFromDoTasks(t *testing.T) {
 		t.Fatalf("stored=%d err=%v", len(loaded), err)
 	}
 	tasks, err := store.Load(db)
-	if anyOf(err != nil, len(tasks) != 2) {
+	if anyOf(err != nil, len(tasks) != 1) {
 
-		t.Fatalf("tasks changed: %d %v", len(tasks), err)
+		t.Fatalf("align records changed: %d %v", len(tasks), err)
+	}
+	items, err := store.LoadDoList(db)
+	if anyOf(err != nil, len(items) != 1, items[0].Body != "mail the letter") {
+
+		t.Fatalf("do list changed: %#v %v", items, err)
 	}
 }
 
@@ -147,15 +145,9 @@ func typeCal(t *testing.T, m calModel, text string) calModel {
 	return m
 }
 func TestCalRepeatCanBeRenamedRescheduledAndDeleted(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("SQLX_ROOT", root)
-	t.Setenv("BOXES_CONFIG", filepath.Join(t.TempDir(), "missing.txt"))
+	isolateSQLX(t)
 	db := store.DatabasePath()
-	do, err := model.NewDoEvent("2026-11-02 23:59:59", "mail the letter")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Add(db, do); err != nil {
+	if _, err := store.AddDoItem(db, 0, "mail the letter"); err != nil {
 		t.Fatal(err)
 	}
 	monday := dateOnly(time.Date(2026, 11, 2, 12, 0, 0, 0, time.Local))
@@ -171,7 +163,7 @@ func TestCalRepeatCanBeRenamedRescheduledAndDeleted(t *testing.T) {
 	m = setForm(t, m, "standup", "09:00", "10:00", "weekly", "")
 	m = keyCal(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	view := stripANSI(m.View())
-	if anyOf(m.errText != "", !strings.Contains(view, "09:00-10:00"), !strings.Contains(view, "standup"), !strings.Contains(view, "weekly"), strings.Contains(view, "mail the letter")) {
+	if anyOf(m.errText != "", m.status != "Repeats standup weekly.", !strings.Contains(view, "09:00-10:00"), !strings.Contains(view, "standup"), !strings.Contains(view, "weekly"), strings.Contains(view, "mail the letter")) {
 
 		t.Fatalf("created series:\n%s\nerr=%s", view, m.errText)
 	}
@@ -246,7 +238,7 @@ func TestCalRepeatCanBeRenamedRescheduledAndDeleted(t *testing.T) {
 	m = typeCal(t, m, "interview")
 	m = keyCal(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	view = stripANSI(m.View())
-	if anyOf(m.day.Day() != 9, !strings.Contains(view, "interview"), strings.Contains(view, "standup"), !strings.Contains(view, "09:00-10:00"), !strings.Contains(view, "weekly")) {
+	if anyOf(m.day.Day() != 9, m.status != "Renamed this event.", !strings.Contains(view, "interview"), strings.Contains(view, "standup"), !strings.Contains(view, "09:00-10:00"), !strings.Contains(view, "weekly")) {
 
 		t.Fatalf("renamed one day:\n%s\nerr=%s", view, m.errText)
 	}
@@ -279,7 +271,7 @@ func finishCalRepeatEdits(t *testing.T, m calModel) {
 	}
 	m = keyCal(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	view = stripANSI(m.View())
-	if anyOf(m.errText != "", m.day.Day() != 16, !strings.Contains(view, "10:00-11:00"), !strings.Contains(view, "standup"), strings.Contains(view, "09:00-10:00")) {
+	if anyOf(m.errText != "", m.status != "Rescheduled this and following.", m.day.Day() != 16, !strings.Contains(view, "10:00-11:00"), !strings.Contains(view, "standup"), strings.Contains(view, "09:00-10:00")) {
 
 		t.Fatalf("split:\n%s\nerr=%s", view, m.errText)
 	}
@@ -319,7 +311,7 @@ func finishCalRepeatEdits(t *testing.T, m calModel) {
 	}
 	m = keyCal(t, m, runeKey('o'))
 	view = stripANSI(m.View())
-	if anyOf(m.day.Day() != 16, strings.Contains(view, "standup"), strings.Contains(view, "10:00-11:00"), !strings.Contains(view, "No time blocked.")) {
+	if anyOf(m.day.Day() != 16, m.status != "Removed this event.", strings.Contains(view, "standup"), strings.Contains(view, "10:00-11:00"), !strings.Contains(view, "No time blocked.")) {
 
 		t.Fatalf("removed nov 16:\n%s\nerr=%s", view, m.errText)
 	}
@@ -332,7 +324,7 @@ func finishCalRepeatEdits(t *testing.T, m calModel) {
 	m = keyCal(t, m, runeKey('d'))
 	m = keyCal(t, m, runeKey('a'))
 	view = stripANSI(m.View())
-	if anyOf(strings.Contains(view, "standup"), !strings.Contains(view, "No time blocked.")) {
+	if anyOf(m.status != "Deleted all events.", strings.Contains(view, "standup"), !strings.Contains(view, "No time blocked.")) {
 
 		t.Fatalf("deleted later series:\n%s\nerr=%s", view, m.errText)
 	}
@@ -358,9 +350,7 @@ func finishCalRepeatEdits(t *testing.T, m calModel) {
 	}
 }
 func TestCalOneOffRenameRescheduleAndDelete(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("SQLX_ROOT", root)
-	t.Setenv("BOXES_CONFIG", filepath.Join(t.TempDir(), "missing.txt"))
+	isolateSQLX(t)
 	db := store.DatabasePath()
 	tuesday := dateOnly(time.Date(2026, 11, 3, 12, 0, 0, 0, time.Local))
 	m := newCalModel(db, nil)
@@ -396,7 +386,7 @@ func TestCalOneOffRenameRescheduleAndDelete(t *testing.T) {
 	m = typeCal(t, m, "focus")
 	m = keyCal(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	view = stripANSI(m.View())
-	if anyOf(!strings.Contains(view, "focus"), strings.Contains(view, "deep work"), !strings.Contains(view, "09:00-10:00")) {
+	if anyOf(m.status != "Renamed focus.", !strings.Contains(view, "focus"), strings.Contains(view, "deep work"), !strings.Contains(view, "09:00-10:00")) {
 
 		t.Fatalf("renamed one-off:\n%s\nerr=%s", view, m.errText)
 	}
@@ -408,7 +398,7 @@ func TestCalOneOffRenameRescheduleAndDelete(t *testing.T) {
 	m = setForm(t, m, "", "11:00", "12:00", "", "")
 	m = keyCal(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	view = stripANSI(m.View())
-	if anyOf(!strings.Contains(view, "11:00-12:00"), !strings.Contains(view, "focus"), strings.Contains(view, "09:00-10:00")) {
+	if anyOf(m.status != "Rescheduled focus.", !strings.Contains(view, "11:00-12:00"), !strings.Contains(view, "focus"), strings.Contains(view, "09:00-10:00")) {
 
 		t.Fatalf("rescheduled one-off:\n%s\nerr=%s", view, m.errText)
 	}
@@ -418,6 +408,9 @@ func TestCalOneOffRenameRescheduleAndDelete(t *testing.T) {
 		t.Fatalf("one-off delete is two steps: scope=%q status=%q", m.scope, m.status)
 	}
 	m = keyCal(t, m, runeKey('d'))
+	if m.status != "Deleted focus." {
+		t.Fatalf("delete status=%q", m.status)
+	}
 	m = keyCal(t, m, runeKey('l'))
 	m = keyCal(t, m, runeKey('h'))
 	if anyOf(strings.Contains(stripANSI(m.View()), "focus"), !strings.Contains(m.View(), "No time blocked.")) {
@@ -450,9 +443,7 @@ func TestCalOneOffRenameRescheduleAndDelete(t *testing.T) {
 }
 
 func TestCalGridBlocksTheSelectedSpan(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("SQLX_ROOT", root)
-	t.Setenv("BOXES_CONFIG", filepath.Join(t.TempDir(), "missing.txt"))
+	isolateSQLX(t)
 	db := store.DatabasePath()
 	monday := dateOnly(time.Date(2026, 11, 2, 12, 0, 0, 0, time.Local))
 	m := newCalModel(db, nil)
@@ -583,9 +574,7 @@ func TestCalGridBlocksTheSelectedSpan(t *testing.T) {
 }
 
 func TestCalSheetClipsACellAndFocusesTheBlock(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("SQLX_ROOT", root)
-	t.Setenv("BOXES_CONFIG", filepath.Join(t.TempDir(), "missing.txt"))
+	isolateSQLX(t)
 	db := store.DatabasePath()
 	monday := dateOnly(time.Date(2026, 11, 2, 12, 0, 0, 0, time.Local))
 	m := newCalModel(db, nil)
@@ -690,9 +679,7 @@ func TestCalSheetClipsACellAndFocusesTheBlock(t *testing.T) {
 }
 
 func TestCalMeetingURL(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("SQLX_ROOT", root)
-	t.Setenv("BOXES_CONFIG", filepath.Join(t.TempDir(), "missing.txt"))
+	isolateSQLX(t)
 	db := store.DatabasePath()
 	monday := dateOnly(time.Date(2026, 11, 2, 12, 0, 0, 0, time.Local))
 	m := newCalModel(db, nil)
@@ -729,7 +716,7 @@ func TestCalMeetingURL(t *testing.T) {
 	m = setFormURL(t, m, "https://meet.example/focus")
 	m = keyCal(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	view = stripANSI(m.View())
-	if anyOf(strings.Contains(view, "https://meet.example/deep"), !strings.Contains(view, "https://meet.example/focus")) {
+	if anyOf(m.status != "Saved deep work.", strings.Contains(view, "https://meet.example/deep"), !strings.Contains(view, "https://meet.example/focus")) {
 
 		t.Fatalf("updated url:\n%s", view)
 	}
@@ -765,7 +752,7 @@ func TestCalMeetingURL(t *testing.T) {
 	m = setFormURL(t, m, "https://meet.example/once")
 	m = keyCal(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	view = stripANSI(m.View())
-	if anyOf(!strings.Contains(view, "https://meet.example/once"), strings.Contains(view, "https://meet.example/stand")) {
+	if anyOf(m.status != "Saved the meeting link.", !strings.Contains(view, "https://meet.example/once"), strings.Contains(view, "https://meet.example/stand")) {
 
 		t.Fatalf("this event url:\n%s", view)
 	}
@@ -802,9 +789,7 @@ func TestCalOpenLinkUsesTheBrowser(t *testing.T) {
 	t.Cleanup(func() { launchMeetingLink = previous })
 	t.Setenv("CRUSADE_POPUP", "")
 
-	root := t.TempDir()
-	t.Setenv("SQLX_ROOT", root)
-	t.Setenv("BOXES_CONFIG", filepath.Join(t.TempDir(), "missing.txt"))
+	isolateSQLX(t)
 	db := store.DatabasePath()
 	monday := dateOnly(time.Date(2026, 11, 2, 12, 0, 0, 0, time.Local))
 	m := newCalModel(db, nil)
@@ -911,9 +896,7 @@ func TestCalOpenLinkClosesTheSuperCWindow(t *testing.T) {
 	t.Cleanup(func() { launchMeetingLink = previous })
 	t.Setenv("CRUSADE_POPUP", "1")
 
-	root := t.TempDir()
-	t.Setenv("SQLX_ROOT", root)
-	t.Setenv("BOXES_CONFIG", filepath.Join(t.TempDir(), "missing.txt"))
+	isolateSQLX(t)
 	db := store.DatabasePath()
 	monday := dateOnly(time.Date(2026, 11, 2, 12, 0, 0, 0, time.Local))
 	m := newCalModel(db, nil)
@@ -926,8 +909,8 @@ func TestCalOpenLinkClosesTheSuperCWindow(t *testing.T) {
 		t.Fatal("empty hour closed the window")
 	}
 	m = next.(calModel)
-	if m.status != "No block selected to open." {
-		t.Fatalf("empty hour status=%q", m.status)
+	if m.status != "No block selected to open." || m.closedCrusade() {
+		t.Fatalf("empty hour status=%q closed=%v", m.status, m.closed)
 	}
 
 	m = keyCal(t, m, runeKey('n'))
@@ -943,7 +926,7 @@ func TestCalOpenLinkClosesTheSuperCWindow(t *testing.T) {
 		t.Fatalf("close command was %T", cmd())
 	}
 	got := next.(calModel)
-	if anyOf(got.status != "Opened the link.", got.errText != "") {
+	if anyOf(got.status != "Opened the link.", got.errText != "", !got.closed, !got.closedCrusade()) {
 
 		t.Fatalf("status=%q err=%q", got.status, got.errText)
 	}
@@ -960,9 +943,7 @@ func TestCalOpenLinkClosesTheSuperCWindow(t *testing.T) {
 }
 
 func TestCalFormAcceptsClipboardPaste(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("SQLX_ROOT", root)
-	t.Setenv("BOXES_CONFIG", filepath.Join(t.TempDir(), "missing.txt"))
+	isolateSQLX(t)
 	db := store.DatabasePath()
 	monday := dateOnly(time.Date(2026, 11, 2, 12, 0, 0, 0, time.Local))
 	m := newCalModel(db, nil)
@@ -1013,9 +994,7 @@ func TestCalFormAcceptsClipboardPaste(t *testing.T) {
 }
 
 func TestCalDaysRepeat(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("SQLX_ROOT", root)
-	t.Setenv("BOXES_CONFIG", filepath.Join(t.TempDir(), "missing.txt"))
+	isolateSQLX(t)
 	db := store.DatabasePath()
 	monday := dateOnly(time.Date(2026, 11, 2, 12, 0, 0, 0, time.Local))
 	if monday.Weekday() != time.Monday {
@@ -1243,14 +1222,16 @@ func setForm(t *testing.T, m calModel, title, start, end, repeat, apply string) 
 }
 
 func TestCalURLKeepsOffHourRepeat(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("SQLX_ROOT", root)
-	t.Setenv("BOXES_CONFIG", filepath.Join(t.TempDir(), "missing.txt"))
+	isolateSQLX(t)
 	db := store.DatabasePath()
 	if _, err := store.Open(db); err != nil {
 		t.Fatal(err)
 	}
-	seed := "INSERT INTO repeat(id, title, start_at, end_at, freq) VALUES (1, 'standup', '2026-11-10 19:30:00', '2026-11-10 20:30:00', 'weekly');"
+	seed := strings.Join([]string{
+		"INSERT INTO repeat(id, title, start_at, end_at, freq) VALUES (1, 'standup', '2026-11-10 19:30:00', '2026-11-10 20:30:00', 'weekly');",
+		"INSERT INTO repeat_override(repeat_id, day, url) VALUES (1, '2026-11-17', 'https://meet.example/day');",
+		"INSERT INTO repeat_skip(repeat_id, day) VALUES (1, '2026-11-24');",
+	}, "\n")
 	if out, err := exec.Command("/usr/bin/sqlite3", db, seed).CombinedOutput(); err != nil {
 		t.Fatalf("seed: %v %s", err, out)
 	}
@@ -1270,17 +1251,38 @@ func TestCalURLKeepsOffHourRepeat(t *testing.T) {
 	m = setFormURL(t, m, "https://meet.example/ade")
 	m = keyCal(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	view := stripANSI(m.View())
-	if anyOf(m.errText != "", !strings.Contains(view, "https://meet.example/ade"), !strings.Contains(view, "19:30-20:30")) {
-		t.Fatalf("saved link:\n%s\nerr=%s", view, m.errText)
+	if anyOf(m.errText != "", m.status != "Saved the meeting link.", !strings.Contains(view, "https://meet.example/ade"), !strings.Contains(view, "19:30-20:30")) {
+		t.Fatalf("saved link status=%q:\n%s\nerr=%s", m.status, view, m.errText)
 	}
 	m = keyCal(t, m, tea.KeyMsg{Type: tea.KeyCtrlL})
 	view = stripANSI(m.View())
-	if anyOf(!strings.Contains(view, "https://meet.example/ade"), !strings.Contains(view, "19:30-20:30")) {
+	if anyOf(!strings.Contains(view, "https://meet.example/ade"), strings.Contains(view, "https://meet.example/day"), !strings.Contains(view, "19:30-20:30")) {
 		t.Fatalf("next week:\n%s", view)
 	}
+	m = keyCal(t, m, tea.KeyMsg{Type: tea.KeyCtrlL})
+	if view = stripANSI(m.View()); anyOf(strings.Contains(view, "19:30-20:30"), !strings.Contains(view, "No time blocked.")) {
+		t.Fatalf("skipped day came back:\n%s", view)
+	}
+	checkOffHourSeries(t, db)
+}
+
+func checkOffHourSeries(t *testing.T, db string) {
+	t.Helper()
 	repeats, err := store.LoadRepeats(db)
-	if anyOf(err != nil, len(repeats) != 1, repeats[0].Repeat.URL != "https://meet.example/ade", repeats[0].Repeat.Start.Minute() != 30, repeats[0].Repeat.End.Minute() != 30) {
+	if anyOf(err != nil, len(repeats) != 1) {
 		t.Fatalf("series %#v %v", repeats, err)
+	}
+	series := repeats[0]
+	if anyOf(series.Repeat.URL != "https://meet.example/ade", series.Repeat.Start.Minute() != 30, series.Repeat.End.Minute() != 30) {
+		t.Fatalf("series %#v", series.Repeat)
+	}
+	for _, override := range series.Overrides {
+		if override.URL != "" {
+			t.Fatalf("day url survived the series url: %#v", series.Overrides)
+		}
+	}
+	if anyOf(len(series.Skips) != 1, series.Skips[0].Format(time.DateOnly) != "2026-11-24") {
+		t.Fatalf("skips %#v", series.Skips)
 	}
 }
 

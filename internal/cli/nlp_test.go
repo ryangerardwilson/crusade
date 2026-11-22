@@ -2,16 +2,12 @@ package cli
 
 import (
 	"bytes"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestNLPModeOnAPipePrintsHelp(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("HOME", root)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
-	t.Setenv("SQLX_ROOT", filepath.Join(root, "sqlx"))
+	testHome(t)
 	var out, errb bytes.Buffer
 	if code := Run([]string{"-m", "nlp"}, &out, &errb); code != 0 {
 		t.Fatalf("code %d stderr %s", code, errb.String())
@@ -25,10 +21,7 @@ func TestNLPModeOnAPipePrintsHelp(t *testing.T) {
 }
 
 func TestNLPModeRejectsRecordFlags(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("HOME", root)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
-	t.Setenv("SQLX_ROOT", filepath.Join(root, "sqlx"))
+	testHome(t)
 	var out bytes.Buffer
 	if code := Run([]string{"-m", "nlp", "-c"}, &out, &bytes.Buffer{}); code == 0 || !strings.Contains(out.String(), "Usage: crusade -m nlp") {
 		t.Fatalf("code %d out %s", code, out.String())

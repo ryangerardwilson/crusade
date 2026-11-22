@@ -10,50 +10,87 @@ import (
 	"github.com/ryangerardwilson/crusade/internal/store"
 )
 
-func TestEnsureSeedsDoOutcomesOnce(t *testing.T) {
+func TestOpenRendersRowsAndStoresWhatVimSaved(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
 	t.Setenv("SQLX_ROOT", filepath.Join(home, "sqlx"))
 	t.Setenv("BOXES_CONFIG", filepath.Join(home, "missing-outline.txt"))
 	db := filepath.Join(home, "crusade.sqlite")
-	doEvent, err := model.NewDoEvent("2026-06-13 23:59:59", "mail the letter")
+	mail, err := store.AddDoItem(db, 0, "mail the letter")
 	if err != nil {
 		t.Fatal(err)
 	}
-	alignEvent, err := model.NewEvent("2026-06-14 23:59:59", "ship the patch", "reduce drift")
+	editor := filepath.Join(home, "editor")
+	shown := filepath.Join(home, "shown")
+	script := "#!/bin/sh\ncp \"$1\" '" + shown + "'\nprintf '# today\\n\\n- mail the letter now\\nbuy stamps\\n' > \"$1\"\n"
+	if err := os.WriteFile(editor, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	previous := VimArgs
+	VimArgs = []string{editor}
+	t.Cleanup(func() { VimArgs = previous })
+	if err := Open(db); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(shown)
+	if err != nil || string(before) != "- mail the letter\n" {
+		t.Fatalf("vim was shown %q err=%v", before, err)
+	}
+	rows, err := store.LoadDoList(db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	records := []store.Record{
-		{ID: 1, Event: doEvent},
-		{ID: 2, Event: alignEvent},
+	want := []model.DoItem{
+		{Kind: model.DoKindHeading, Body: "# today"},
+		{Kind: model.DoKindBlank},
+		{ID: mail, Kind: model.DoKindItem, Body: "mail the letter now"},
+		{Kind: model.DoKindItem, Body: "buy stamps"},
 	}
-	if err := store.Save(db, records); err != nil {
-		t.Fatal(err)
+	if len(rows) != len(want) {
+		t.Fatalf("rows = %#v", rows)
 	}
-	if err := Ensure(db); err != nil {
+	for index, row := range rows {
+		if row.Kind != want[index].Kind || row.Body != want[index].Body || (want[index].ID != 0 && row.ID != want[index].ID) {
+			t.Fatalf("row %d = %#v, want %#v", index, row, want[index])
+		}
+	}
+	VimArgs = []string{"true"}
+	if err := Open(db); err != nil {
 		t.Fatal(err)
 	}
 	body, err := os.ReadFile(Path())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(body) != "mail the letter\n" {
-		t.Fatalf("seed = %q", body)
+	if string(body) != "# today\n\n- mail the letter now\n- buy stamps\n" {
+		t.Fatalf("the next open wrote %q", body)
 	}
-	if err := os.WriteFile(Path(), []byte("# today\n- mail the letter\n"), 0o644); err != nil {
+}
+
+func TestFailedVimKeepsTheRows(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("SQLX_ROOT", filepath.Join(home, "sqlx"))
+	t.Setenv("BOXES_CONFIG", filepath.Join(home, "missing-outline.txt"))
+	db := filepath.Join(home, "crusade.sqlite")
+	if _, err := store.AddDoItem(db, 0, "mail the letter"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Ensure(db); err != nil {
+	editor := filepath.Join(home, "editor")
+	if err := os.WriteFile(editor, []byte("#!/bin/sh\n: > \"$1\"\nexit 3\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	body, err = os.ReadFile(Path())
-	if err != nil {
-		t.Fatal(err)
+	previous := VimArgs
+	VimArgs = []string{editor}
+	t.Cleanup(func() { VimArgs = previous })
+	if err := Open(db); err == nil {
+		t.Fatal("a failed vim was saved")
 	}
-	if string(body) != "# today\n- mail the letter\n" {
-		t.Fatalf("rewritten seed:\n%s", body)
+	rows, err := store.LoadDoList(db)
+	if err != nil || len(rows) != 1 || rows[0].Body != "mail the letter" {
+		t.Fatalf("rows = %#v err=%v", rows, err)
 	}
 }
 

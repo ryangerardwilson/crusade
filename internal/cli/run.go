@@ -104,23 +104,22 @@ func runRadialOnce(dbPath string, stdout, stderr io.Writer) (int, bool) {
 	if chosen == "" {
 		return 0, true
 	}
-	tui.ExitAfterMode = false
-	code := launchChosen(dbPath, chosen, stdout, stderr)
-	if code != 0 || tui.ExitAfterMode {
-		return code, true
+	result := launchChosen(dbPath, chosen, stdout, stderr)
+	if result.Code != 0 || result.Closed {
+		return result.Code, true
 	}
 	return 0, false
 }
 
-func launchChosen(dbPath, mode string, stdout, stderr io.Writer) int {
+func launchChosen(dbPath, mode string, stdout, stderr io.Writer) tui.Result {
 	switch mode {
 	case model.ModeDo:
-		return openDo(dbPath, stdout)
+		return tui.Result{Code: openDo(dbPath, stdout)}
 	case model.ModeAlign, model.ModeBox, model.ModeCal, model.ModeNLP:
 		return runTUI(dbPath, mode, stdout, stderr)
 	default:
 		fmt.Fprintln(stdout, "Unknown mode.")
-		return 1
+		return tui.Result{Code: 1}
 	}
 }
 
@@ -185,7 +184,7 @@ func runCRUD(dataPath string, args []string, stdout, stderr io.Writer) int {
 		if mode == model.ModeDo {
 			return openDo(dataPath, stdout)
 		}
-		return runTUI(dataPath, mode, stdout, stderr)
+		return runTUI(dataPath, mode, stdout, stderr).Code
 	}
 	switch mode {
 	case model.ModeDo:
@@ -193,22 +192,22 @@ func runCRUD(dataPath string, args []string, stdout, stderr io.Writer) int {
 		case "c":
 			return createDo(dataPath, rest, stdout)
 		case "r":
-			return readRecords(dataPath, model.ModeDo, rest, stdout)
+			return readDo(dataPath, rest, stdout)
 		case "u":
 			return updateDo(dataPath, rest, stdout)
 		case "d":
-			return deleteRecord(dataPath, model.ModeDo, rest, stdout)
+			return deleteDo(dataPath, rest, stdout)
 		}
 	case model.ModeAlign:
 		switch op {
 		case "c":
 			return createAlign(dataPath, rest, stdout)
 		case "r":
-			return readRecords(dataPath, model.ModeAlign, rest, stdout)
+			return readAlign(dataPath, rest, stdout)
 		case "u":
 			return updateAlign(dataPath, rest, stdout)
 		case "d":
-			return deleteRecord(dataPath, model.ModeAlign, rest, stdout)
+			return deleteAlign(dataPath, rest, stdout)
 		}
 	case model.ModeBox:
 		return runBox(dataPath, op, rest, stdout)
@@ -275,21 +274,11 @@ func parseModeOp(args []string) (string, string, []string, error) {
 }
 
 func createDo(dataPath string, args []string, stdout io.Writer) int {
-	if len(args) < 1 || len(args) > 2 {
-		fmt.Fprintln(stdout, "Usage: crusade -m do -c <outcome> [when]")
+	if len(args) != 1 {
+		fmt.Fprintln(stdout, "Usage: crusade -m do -c <outcome>")
 		return 1
 	}
-	when, err := doWhen(args, 1)
-	if err != nil {
-		fmt.Fprintln(stdout, err)
-		return 1
-	}
-	event, err := model.NewDoEvent(when, args[0])
-	if err != nil {
-		fmt.Fprintln(stdout, err)
-		return 1
-	}
-	if err := store.Add(dataPath, event); err != nil {
+	if _, err := store.AddDoItem(dataPath, 0, args[0]); err != nil {
 		fmt.Fprintln(stdout, err)
 		return 1
 	}
@@ -297,8 +286,8 @@ func createDo(dataPath string, args []string, stdout io.Writer) int {
 }
 
 func updateDo(dataPath string, args []string, stdout io.Writer) int {
-	if len(args) < 2 || len(args) > 3 {
-		fmt.Fprintln(stdout, "Usage: crusade -m do -u <id> <outcome> [when]")
+	if len(args) != 2 {
+		fmt.Fprintln(stdout, "Usage: crusade -m do -u <id> <text>")
 		return 1
 	}
 	id, err := parsePositiveInt(args[0], "ID")
@@ -306,59 +295,50 @@ func updateDo(dataPath string, args []string, stdout io.Writer) int {
 		fmt.Fprintln(stdout, err)
 		return 1
 	}
-	original, code := loadModeRecord(dataPath, id, model.ModeDo, stdout)
-	if code != 0 {
-		return code
-	}
-	when := original.X.Format(model.DateTimeFormat)
-	if len(args) == 3 {
-		when, err = normalizeWhen(args[2])
-		if err != nil {
-			fmt.Fprintln(stdout, err)
-			return 1
-		}
-	}
-	event, err := model.NewDoEvent(when, args[1])
-	if err != nil {
-		fmt.Fprintln(stdout, err)
-		return 1
-	}
-	event.Done = original.Done
-	event.DoneAt = original.DoneAt
-	if err := store.Update(dataPath, id, event); err != nil {
+	if err := store.UpdateDoItem(dataPath, id, args[1]); err != nil {
 		fmt.Fprintln(stdout, err)
 		return 1
 	}
 	return 0
 }
 
-func doWhen(args []string, index int) (string, error) {
-	if index >= len(args) {
-		day := nowFunc()
-		stamp := time.Date(day.Year(), day.Month(), day.Day(), 23, 59, 59, 0, day.Location())
-		return stamp.Format(model.DateTimeFormat), nil
+func deleteDo(dataPath string, args []string, stdout io.Writer) int {
+	if len(args) != 1 {
+		fmt.Fprintln(stdout, "Usage: crusade -m do -d <id>")
+		return 1
 	}
-	return normalizeWhen(args[index])
+	id, err := parsePositiveInt(args[0], "ID")
+	if err != nil {
+		fmt.Fprintln(stdout, err)
+		return 1
+	}
+	if err := store.DeleteDoItem(dataPath, id); err != nil {
+		fmt.Fprintln(stdout, err)
+		return 1
+	}
+	return 0
 }
 
-func normalizeWhen(raw string) (string, error) {
-	value := strings.TrimSpace(raw)
-	if len(value) == 10 {
-		if day, err := time.ParseInLocation("2006-01-02", value, time.Local); err == nil {
-			stamp := time.Date(day.Year(), day.Month(), day.Day(), 23, 59, 59, 0, time.Local)
-			return stamp.Format(model.DateTimeFormat), nil
-		}
+func readDo(dataPath string, args []string, stdout io.Writer) int {
+	limit, ok := parseLimit(model.ModeDo, args, stdout)
+	if !ok {
+		return 1
 	}
-	parsed, err := model.ParseDateTime(value)
+	rows, err := store.LoadDoList(dataPath)
 	if err != nil {
-		return "", err
+		fmt.Fprintln(stdout, err)
+		return 1
 	}
-	return parsed.Format(model.DateTimeFormat), nil
+	if limit > 0 && len(rows) > limit {
+		rows = rows[:limit]
+	}
+	printDoList(rows, stdout)
+	return 0
 }
 
 func createAlign(dataPath string, args []string, stdout io.Writer) int {
 	if len(args) == 0 {
-		event, ok, err := editEvent(model.DefaultEvent(nowFunc()))
+		event, ok, err := editAlign(model.DefaultAlign(nowFunc()))
 		if err != nil {
 			fmt.Fprintln(stdout, err)
 			return 1
@@ -382,7 +362,7 @@ func createAlign(dataPath string, args []string, stdout io.Writer) int {
 		fmt.Fprintf(stdout, "Missing required field(s): %s for direct add\n", strings.Join(missing, ", "))
 		return 1
 	}
-	event, err := model.NewEvent(fields["x"], fields["y"], fields["z"])
+	event, err := model.NewAlign(fields["x"], fields["y"], fields["z"])
 	if err != nil {
 		fmt.Fprintln(stdout, err)
 		return 1
@@ -404,12 +384,12 @@ func updateAlign(dataPath string, args []string, stdout io.Writer) int {
 		fmt.Fprintln(stdout, err)
 		return 1
 	}
-	original, code := loadModeRecord(dataPath, id, model.ModeAlign, stdout)
+	original, code := loadAlignRecord(dataPath, id, stdout)
 	if code != 0 {
 		return code
 	}
 	if len(args) == 1 {
-		event, ok, err := editEvent(original)
+		event, ok, err := editAlign(original)
 		if err != nil {
 			fmt.Fprintln(stdout, err)
 			return 1
@@ -440,8 +420,8 @@ func updateAlign(dataPath string, args []string, stdout io.Writer) int {
 	return 0
 }
 
-func readRecords(dataPath string, mode string, args []string, stdout io.Writer) int {
-	limit, ok := parseLimit(mode, args, stdout)
+func readAlign(dataPath string, args []string, stdout io.Writer) int {
+	limit, ok := parseLimit(model.ModeAlign, args, stdout)
 	if !ok {
 		return 1
 	}
@@ -450,26 +430,17 @@ func readRecords(dataPath string, mode string, args []string, stdout io.Writer) 
 		fmt.Fprintln(stdout, err)
 		return 1
 	}
-	filtered := make([]store.Record, 0, len(records))
+	filtered := make([]store.AlignRecord, 0, len(records))
 	now := nowFunc()
 	for _, record := range records {
-		if mode == model.ModeDo {
-			if !record.Event.IsDo() {
-				continue
-			}
-		} else if record.Event.IsDo() || record.Event.X.Before(now) {
-			continue
+		if !record.Align.X.Before(now) {
+			filtered = append(filtered, record)
 		}
-		filtered = append(filtered, record)
 	}
 	if limit > 0 && len(filtered) > limit {
 		filtered = filtered[:limit]
 	}
-	if mode == model.ModeDo {
-		printDoList(filtered, stdout)
-	} else {
-		printAlignList(filtered, stdout)
-	}
+	printAlignList(filtered, stdout)
 	return 0
 }
 
@@ -489,18 +460,15 @@ func parseLimit(mode string, args []string, stdout io.Writer) (int, bool) {
 	return parsed, true
 }
 
-func deleteRecord(dataPath string, mode string, args []string, stdout io.Writer) int {
+func deleteAlign(dataPath string, args []string, stdout io.Writer) int {
 	if len(args) != 1 {
-		fmt.Fprintf(stdout, "Usage: crusade -m %s -d <id>\n", mode)
+		fmt.Fprintln(stdout, "Usage: crusade -m align -d <id>")
 		return 1
 	}
 	id, err := parsePositiveInt(args[0], "ID")
 	if err != nil {
 		fmt.Fprintln(stdout, err)
 		return 1
-	}
-	if _, code := loadModeRecord(dataPath, id, mode, stdout); code != 0 {
-		return code
 	}
 	if err := store.Delete(dataPath, id); err != nil {
 		fmt.Fprintln(stdout, err)
@@ -509,34 +477,27 @@ func deleteRecord(dataPath string, mode string, args []string, stdout io.Writer)
 	return 0
 }
 
-func loadModeRecord(dataPath string, id int, mode string, stdout io.Writer) (model.Event, int) {
+func loadAlignRecord(dataPath string, id int, stdout io.Writer) (model.Align, int) {
 	records, err := store.Load(dataPath)
 	if err != nil {
 		fmt.Fprintln(stdout, err)
-		return model.Event{}, 1
+		return model.Align{}, 1
 	}
 	original, found := eventByID(records, id)
 	if !found {
 		fmt.Fprintf(stdout, "ID %d not found\n", id)
-		return model.Event{}, 1
-	}
-	if mode == model.ModeDo && !original.IsDo() {
-		fmt.Fprintf(stdout, "ID %d is an align record.\n", id)
-		return model.Event{}, 1
-	}
-	if mode == model.ModeAlign && original.IsDo() {
-		fmt.Fprintf(stdout, "ID %d is a do record.\n", id)
-		return model.Event{}, 1
+		return model.Align{}, 1
 	}
 	return original, 0
 }
-func eventByID(records []store.Record, id int) (model.Event, bool) {
+
+func eventByID(records []store.AlignRecord, id int) (model.Align, bool) {
 	for _, record := range records {
 		if record.ID == id {
-			return record.Event, true
+			return record.Align, true
 		}
 	}
-	return model.Event{}, false
+	return model.Align{}, false
 }
 
 func openConfig(stdout io.Writer) int {
@@ -569,10 +530,10 @@ func openConfig(stdout io.Writer) int {
 	return 0
 }
 
-func editEvent(seed model.Event) (model.Event, bool, error) {
+func editAlign(seed model.Align) (model.Align, bool, error) {
 	tmp, err := os.CreateTemp("", "crusade-*.yaml")
 	if err != nil {
-		return model.Event{}, false, err
+		return model.Align{}, false, err
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
@@ -580,14 +541,14 @@ func editEvent(seed model.Event) (model.Event, bool, error) {
 	payload, err := model.ToYAML(seed)
 	if err != nil {
 		_ = tmp.Close()
-		return model.Event{}, false, err
+		return model.Align{}, false, err
 	}
 	if _, err := tmp.Write(append(payload, '\n')); err != nil {
 		_ = tmp.Close()
-		return model.Event{}, false, err
+		return model.Align{}, false, err
 	}
 	if err := tmp.Close(); err != nil {
-		return model.Event{}, false, err
+		return model.Align{}, false, err
 	}
 
 	editor := os.Getenv("VISUAL")
@@ -607,22 +568,21 @@ func editEvent(seed model.Event) (model.Event, bool, error) {
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		if _, ok := err.(*exec.ExitError); ok {
-			return model.Event{}, false, nil
+			return model.Align{}, false, nil
 		}
-		return model.Event{}, false, err
+		return model.Align{}, false, err
 	}
 	edited, err := os.ReadFile(tmpPath)
 	if err != nil {
-		return model.Event{}, false, err
+		return model.Align{}, false, err
 	}
 	event, err := model.FromYAML(edited)
 	if err != nil {
 		if errors.Is(err, model.ErrBlankAlign) {
-			return model.Event{}, false, nil
+			return model.Align{}, false, nil
 		}
-		return model.Event{}, false, err
+		return model.Align{}, false, err
 	}
-	event.Done = seed.Done
 	event.DoneAt = seed.DoneAt
 	return event, true, nil
 }
@@ -662,7 +622,7 @@ func printFieldMeanings(stdout io.Writer) {
 	fmt.Fprint(stdout, "  z: why it matters / impact\n")
 }
 
-func printAlignList(records []store.Record, stdout io.Writer) {
+func printAlignList(records []store.AlignRecord, stdout io.Writer) {
 	title := fmt.Sprintf("crusade align items (%d)", len(records))
 	fmt.Fprintln(stdout, title)
 	fmt.Fprintln(stdout, strings.Repeat("-", len(title)))
@@ -671,7 +631,7 @@ func printAlignList(records []store.Record, stdout io.Writer) {
 		return
 	}
 	for idx, record := range records {
-		event := record.Event
+		event := record.Align
 		fmt.Fprintf(stdout, "   id: %d\n", record.ID)
 		fmt.Fprintf(stdout, "%d. x: %s\n", idx+1, event.X.Format("2006-01-02"))
 		wrapLine(stdout, "   y: ", event.Y)
@@ -682,24 +642,26 @@ func printAlignList(records []store.Record, stdout io.Writer) {
 	}
 }
 
-func printDoList(records []store.Record, stdout io.Writer) {
-	title := fmt.Sprintf("crusade do items (%d)", len(records))
+// printDoList shows the do list as Vim shows it, each row with its id.
+func printDoList(rows []model.DoItem, stdout io.Writer) {
+	items := 0
+	for _, row := range rows {
+		if row.Kind == model.DoKindItem {
+			items++
+		}
+	}
+	title := fmt.Sprintf("crusade do items (%d)", items)
 	fmt.Fprintln(stdout, title)
 	fmt.Fprintln(stdout, strings.Repeat("-", len(title)))
-	if len(records) == 0 {
+	if len(rows) == 0 {
 		fmt.Fprintln(stdout, "No items.")
 		return
 	}
-	for idx, record := range records {
-		event := record.Event
-		fmt.Fprintf(stdout, "%d. id: %d\n", idx+1, record.ID)
-		fmt.Fprintf(stdout, "   when: %s\n", event.X.Format(model.DateTimeFormat))
-		wrapLine(stdout, "   outcome: ", event.Y)
-		if idx < len(records)-1 {
-			fmt.Fprintln(stdout, strings.Repeat("-", 36))
-		}
+	for _, row := range rows {
+		fmt.Fprintf(stdout, "%4d  %s\n", row.ID, row.Line())
 	}
 }
+
 func wrapLine(stdout io.Writer, prefix, text string) {
 	wrapped := wrapWords(text, 100-len(prefix))
 	if len(wrapped) == 0 {

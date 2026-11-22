@@ -9,45 +9,27 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ryangerardwilson/crusade/internal/sqlite"
 	root "github.com/ryangerardwilson/crusade/nlp/bundle"
 	"github.com/ryangerardwilson/crusade/nlp/internal/course"
 )
 
 const databaseName = "nlp"
 
-const importedCoursesKey = "imported_courses"
-const appVersionKey = "app_version"
-
-// Null value in meta is a key that is set with no value.
-const metaModel = "model meta\n" +
-	"  id integer primary key\n" +
-	"  key text not null\n" +
-	"  value text\n"
-
-const courseModel = "model course\n" +
-	"  id integer primary key\n" +
-	"  slug text not null\n" +
-	"  name text not null\n" +
-	"  body text not null\n" +
-	"  bundled integer not null\n"
-
 type courseRow struct {
 	ID      int    `json:"id"`
 	Slug    string `json:"slug"`
-	Name    string `json:"name"`
 	Body    string `json:"body"`
 	Bundled int    `json:"bundled"`
 }
 
 type embeddedCourse struct {
 	Slug string
-	Name string
 	Body string
 }
 
 type legacyConfig struct {
 	Courses []struct {
-		Name      string `json:"name"`
 		LocalPath string `json:"local_path"`
 	} `json:"courses"`
 }
@@ -61,7 +43,7 @@ func LoadCourses(version string) ([]course.Course, error) {
 		return nil, err
 	}
 	var rows []courseRow
-	if err := queryJSON(dbPath, "SELECT id, slug, name, body, bundled FROM course", &rows); err != nil {
+	if err := sqlite.Query(dbPath, "SELECT id, slug, body, bundled FROM course", &rows); err != nil {
 		return nil, err
 	}
 	courses := make([]course.Course, 0, len(rows))
@@ -81,7 +63,7 @@ func LoadCourses(version string) ([]course.Course, error) {
 }
 
 func openDB() (string, error) {
-	path := dbFile(databaseName)
+	path := sqlite.File(databaseName)
 	if err := ensure(path); err != nil {
 		return "", err
 	}
@@ -108,27 +90,20 @@ func syncCourses(dbPath, version string) error {
 	if err != nil {
 		return err
 	}
-	imported, err := metaHas(dbPath, importedCoursesKey)
+	stored, imported, err := bundledVersion(dbPath)
 	if err != nil {
 		return err
 	}
 	if !imported {
 		for _, item := range embedded {
-			if err := upsertCourse(dbPath, item.Slug, item.Name, item.Body, 1, true); err != nil {
+			if err := upsertCourse(dbPath, item.Slug, item.Body, 1, true); err != nil {
 				return err
 			}
 		}
 		if err := importLegacyCourses(dbPath, embedded); err != nil {
 			return err
 		}
-		if err := setMeta(dbPath, importedCoursesKey, "1"); err != nil {
-			return err
-		}
-		return setMeta(dbPath, appVersionKey, version)
-	}
-	stored, err := metaValue(dbPath, appVersionKey)
-	if err != nil {
-		return err
+		return setBundledVersion(dbPath, version)
 	}
 	refresh := stored != version
 	for _, item := range embedded {
@@ -137,9 +112,28 @@ func syncCourses(dbPath, version string) error {
 		}
 	}
 	if refresh {
-		return setMeta(dbPath, appVersionKey, version)
+		return setBundledVersion(dbPath, version)
 	}
 	return nil
+}
+
+// bundledVersion is the app version whose bundled courses were last copied.
+// imported is false when they never were.
+func bundledVersion(dbPath string) (string, bool, error) {
+	var rows []struct {
+		Version *string `json:"bundled_version"`
+	}
+	if err := sqlite.Query(dbPath, "SELECT bundled_version FROM learner WHERE id = 1", &rows); err != nil {
+		return "", false, err
+	}
+	if len(rows) == 0 || rows[0].Version == nil {
+		return "", false, nil
+	}
+	return *rows[0].Version, true, nil
+}
+
+func setBundledVersion(dbPath, version string) error {
+	return execSQL(dbPath, "UPDATE learner SET bundled_version = "+sqlite.Quote(version)+" WHERE id = 1;\n")
 }
 
 func refreshBundled(dbPath string, item embeddedCourse, refresh bool) error {
@@ -155,10 +149,10 @@ func refreshBundled(dbPath string, item embeddedCourse, refresh bool) error {
 		return err
 	}
 	if !ok {
-		return upsertCourse(dbPath, item.Slug, item.Name, item.Body, 1, true)
+		return upsertCourse(dbPath, item.Slug, item.Body, 1, true)
 	}
 	if refresh && row.Bundled == 1 {
-		return upsertCourse(dbPath, item.Slug, item.Name, item.Body, 1, true)
+		return upsertCourse(dbPath, item.Slug, item.Body, 1, true)
 	}
 	return nil
 }
@@ -177,15 +171,10 @@ func readEmbedded() ([]embeddedCourse, error) {
 		if err != nil {
 			return nil, err
 		}
-		parsed, ok := course.ParseMarkdown(entry.Name(), string(body))
-		if !ok {
+		if _, ok := course.ParseMarkdown(entry.Name(), string(body)); !ok {
 			continue
 		}
-		items = append(items, embeddedCourse{
-			Slug: slugFor(entry.Name()),
-			Name: parsed.Name,
-			Body: string(body),
-		})
+		items = append(items, embeddedCourse{Slug: slugFor(entry.Name()), Body: string(body)})
 	}
 	return items, nil
 }
@@ -219,8 +208,7 @@ func importLegacyCourses(dbPath string, embedded []embeddedCourse) error {
 			}
 			return err
 		}
-		parsed, ok := course.ParseMarkdown(filepath.Base(coursePath), string(fileBody))
-		if !ok {
+		if _, ok := course.ParseMarkdown(filepath.Base(coursePath), string(fileBody)); !ok {
 			continue
 		}
 		slug := slugFor(filepath.Base(coursePath))
@@ -228,11 +216,7 @@ func importLegacyCourses(dbPath string, embedded []embeddedCourse) error {
 		if bundled[slug] {
 			flag = 1
 		}
-		name := parsed.Name
-		if name == "" {
-			name = strings.TrimSpace(entry.Name)
-		}
-		if err := upsertCourse(dbPath, slug, name, string(fileBody), flag, true); err != nil {
+		if err := upsertCourse(dbPath, slug, string(fileBody), flag, true); err != nil {
 			return err
 		}
 	}
@@ -241,7 +225,7 @@ func importLegacyCourses(dbPath string, embedded []embeddedCourse) error {
 
 func courseBySlug(dbPath, slug string) (courseRow, bool, error) {
 	var rows []courseRow
-	if err := queryJSON(dbPath, "SELECT id, slug, name, body, bundled FROM course WHERE slug = "+sqlString(slug), &rows); err != nil {
+	if err := sqlite.Query(dbPath, "SELECT id, slug, body, bundled FROM course WHERE slug = "+sqlite.Quote(slug), &rows); err != nil {
 		return courseRow{}, false, err
 	}
 	if len(rows) == 0 {
@@ -250,21 +234,23 @@ func courseBySlug(dbPath, slug string) (courseRow, bool, error) {
 	return rows[0], true, nil
 }
 
-func upsertCourse(dbPath, slug, name, body string, bundled int, overwrite bool) error {
+// upsertCourse stores body under slug. A course's name is the title line of
+// its body, so it is not stored apart.
+func upsertCourse(dbPath, slug, body string, bundled int, overwrite bool) error {
 	row, ok, err := courseBySlug(dbPath, slug)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		sql := fmt.Sprintf("INSERT INTO course(slug, name, body, bundled) VALUES (%s, %s, %s, %d);\n",
-			sqlString(slug), sqlString(name), sqlString(body), bundled)
+		sql := fmt.Sprintf("INSERT INTO course(slug, body, bundled) VALUES (%s, %s, %d);\n",
+			sqlite.Quote(slug), sqlite.Quote(body), bundled)
 		return execSQL(dbPath, sql)
 	}
 	if !overwrite {
 		return nil
 	}
-	sql := fmt.Sprintf("UPDATE course SET name = %s, body = %s, bundled = %d WHERE id = %d;\n",
-		sqlString(name), sqlString(body), bundled, row.ID)
+	sql := fmt.Sprintf("UPDATE course SET body = %s, bundled = %d WHERE id = %d;\n",
+		sqlite.Quote(body), bundled, row.ID)
 	return execSQL(dbPath, sql)
 }
 
@@ -280,42 +266,13 @@ func slugFor(name string) string {
 	return base
 }
 
-func metaHas(dbPath, key string) (bool, error) {
-	var rows []struct {
-		N int `json:"n"`
-	}
-	if err := queryJSON(dbPath, "SELECT COUNT(*) AS n FROM meta WHERE key = "+sqlString(key), &rows); err != nil {
-		return false, err
-	}
-	if len(rows) == 0 {
-		return false, nil
-	}
-	return rows[0].N > 0, nil
-}
-
-func metaValue(dbPath, key string) (string, error) {
-	var rows []struct {
-		Value *string `json:"value"`
-	}
-	if err := queryJSON(dbPath, "SELECT value FROM meta WHERE key = "+sqlString(key)+" ORDER BY id DESC LIMIT 1", &rows); err != nil {
-		return "", err
-	}
-	if len(rows) == 0 || rows[0].Value == nil {
-		return "", nil
-	}
-	return *rows[0].Value, nil
-}
-
-const placePathKey = "place_path"
-const placeCursorKey = "place_cursor"
-
 // SavePlace stores the session list place in the nlp database.
 func SavePlace(path, cursor string) error {
 	dbPath, err := openDB()
 	if err != nil {
 		return err
 	}
-	return execSQL(dbPath, inTx(metaSQL(placePathKey, path), metaSQL(placeCursorKey, cursor)))
+	return execSQL(dbPath, fmt.Sprintf("UPDATE learner SET place_path = %s, place_cursor = %s WHERE id = 1;\n", sqlite.Quote(path), sqlite.Quote(cursor)))
 }
 
 // LoadPlace reads the session list place. ok is false when none is stored.
@@ -324,29 +281,17 @@ func LoadPlace() (string, string, bool, error) {
 	if err != nil {
 		return "", "", false, err
 	}
-	path, err := metaValue(dbPath, placePathKey)
-	if err != nil {
+	var rows []struct {
+		Path   *string `json:"place_path"`
+		Cursor *string `json:"place_cursor"`
+	}
+	if err := sqlite.Query(dbPath, "SELECT place_path, place_cursor FROM learner WHERE id = 1", &rows); err != nil {
 		return "", "", false, err
 	}
-	cursor, err := metaValue(dbPath, placeCursorKey)
-	if err != nil {
-		return "", "", false, err
-	}
-	if path == "" && cursor == "" {
+	if len(rows) == 0 || rows[0].Path == nil || rows[0].Cursor == nil {
 		return "", "", false, nil
 	}
-	return path, cursor, true, nil
-}
-
-func setMeta(dbPath, key, value string) error {
-	return execSQL(dbPath, metaSQL(key, value))
-}
-
-// metaSQL sets key to value, inserting the row when the key is new.
-func metaSQL(key, value string) string {
-	return fmt.Sprintf("UPDATE meta SET value = %[2]s WHERE key = %[1]s;\n"+
-		"INSERT INTO meta(key, value) SELECT %[1]s, %[2]s WHERE NOT EXISTS (SELECT 1 FROM meta WHERE key = %[1]s);\n",
-		sqlString(key), sqlString(value))
+	return *rows[0].Path, *rows[0].Cursor, true, nil
 }
 
 // inTx wraps statements in one transaction. sqliteRun bails at the first
@@ -356,18 +301,7 @@ func inTx(statements ...string) string {
 }
 
 func ensure(dbPath string) error {
-	if err := prepareAppDB(dbPath, databaseName, ormText()); err != nil {
-		return err
-	}
-	return sqliteExec(dbPath, "DROP TABLE IF EXISTS bookmark;")
-}
-
-func ormText() string {
-	return metaModel + "\n" + courseModel
-}
-
-func sqlString(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+	return sqlite.Prepare(dbPath, nlpSchema())
 }
 
 func expandPath(path string) string {
@@ -387,14 +321,17 @@ func expandPath(path string) string {
 	return path
 }
 
-func queryJSON(dbPath, sql string, dest any) error {
-	return sqliteQueryJSON(dbPath, sql, dest)
-}
-
+// execSQL writes the nlp sqlite and backs it up unless it holds no course.
+// An empty file is the damaged local copy, so it is not published.
 func execSQL(dbPath, sql string) error {
-	if err := sqliteExec(dbPath, sql); err != nil {
+	if err := sqlite.Exec(dbPath, sql); err != nil {
 		return err
 	}
-	publishObject(dbPath, databaseName)
+	var rows []struct {
+		N int `json:"n"`
+	}
+	if err := sqlite.Query(dbPath, "SELECT COUNT(*) AS n FROM course", &rows); err == nil && len(rows) > 0 && rows[0].N > 0 {
+		sqlite.Publish(dbPath, databaseName)
+	}
 	return nil
 }

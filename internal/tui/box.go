@@ -16,7 +16,7 @@ import (
 type boxModel struct {
 	dataPath      string
 	outline       box.Outline
-	checked       map[string]bool
+	checked       map[int]bool
 	day           string
 	selected      int
 	showHelp      bool
@@ -34,42 +34,37 @@ type boxModel struct {
 	memory        modeMemory
 }
 
-func runBox(dataPath string, stdout, stderr io.Writer) int {
+func runBox(dataPath string, stdout, stderr io.Writer) Result {
 	outline, err := store.LoadOutline(dataPath)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return 1
+		return Result{Code: 1}
 	}
 	day := time.Now().Local().Format(time.DateOnly)
 	checked, err := store.LoadDayChecks(dataPath, day)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return 1
+		return Result{Code: 1}
 	}
 	active, err := store.LoadActiveDays(dataPath)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return 1
+		return Result{Code: 1}
 	}
 	counts, err := store.LoadCheckCounts(dataPath)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return 1
+		return Result{Code: 1}
 	}
 	model := newBoxModel(dataPath, outline, checked, day)
 	model.activeDays = active
 	model.dayCounts = counts
-	program := tea.NewProgram(model, tea.WithAltScreen())
-	if _, err := program.Run(); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	return 0
+	return runProgram(model, stderr)
 }
 
-func newBoxModel(dataPath string, outline box.Outline, checked map[string]bool, day string) boxModel {
+func newBoxModel(dataPath string, outline box.Outline, checked map[int]bool, day string) boxModel {
 	if checked == nil {
-		checked = map[string]bool{}
+		checked = map[int]bool{}
 	}
 	return boxModel{dataPath: dataPath, outline: outline, checked: checked, day: day}
 }
@@ -142,8 +137,7 @@ func (m boxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.deleteSelectedBox()
 		case "r":
 			m.pendingDelete = false
-			m.checked = map[string]bool{}
-			m.save("Reset " + m.day + ".")
+			m.apply(store.ClearDayChecks(m.dataPath, m.day), "Reset "+m.day+".")
 		default:
 			m.pendingDelete = false
 		}
@@ -251,56 +245,53 @@ func (m *boxModel) toggleSelected() {
 	}
 	m.clamp()
 	item := items[m.selected]
-	wasChecked := m.outline.StatusFor(item.ID, m.checked) == box.Checked
-	next, err := box.Toggle(m.outline, m.checked, item.ID)
-	if err != nil {
-		m.errText = err.Error()
-		return
+	on, err := store.ToggleBox(m.dataPath, m.day, item.ID)
+	verb := "Unchecked"
+	if on {
+		verb = "Checked"
 	}
-	m.checked = next
-	verb := "Checked"
-	if wasChecked {
-		verb = "Unchecked"
-	}
-	m.save(verb + " " + item.Label + ".")
+	m.apply(err, verb+" "+item.Label+".")
 }
 
-func (m *boxModel) save(status string) {
-	if err := store.SaveDayChecks(m.dataPath, m.day, m.checked); err != nil {
+// apply shows the outcome of a store write and reloads the outline, the
+// day's checks, and the counts from the store. The model holds only that
+// cache of the store's answer.
+func (m *boxModel) apply(err error, status string) {
+	if err == nil {
+		err = m.reload()
+	}
+	if err != nil {
 		m.errText = err.Error()
 		m.status = ""
 		return
 	}
-	m.noteActiveDay()
 	m.errText = ""
 	m.status = status
+	m.clamp()
 }
 
-func (m *boxModel) noteActiveDay() {
-	if m.activeDays == nil {
-		m.activeDays = map[string]bool{}
+func (m *boxModel) reload() error {
+	outline, err := store.LoadOutline(m.dataPath)
+	if err != nil {
+		return err
 	}
-	if m.dayCounts == nil {
-		m.dayCounts = map[string]int{}
-		for day, on := range m.activeDays {
-			if on {
-				m.dayCounts[day] = 1
-			}
-		}
+	checked, err := store.LoadDayChecks(m.dataPath, m.day)
+	if err != nil {
+		return err
 	}
-	count := 0
-	for _, on := range m.checked {
-		if on {
-			count++
-		}
+	active, err := store.LoadActiveDays(m.dataPath)
+	if err != nil {
+		return err
 	}
-	if count > 0 {
-		m.activeDays[m.day] = true
-		m.dayCounts[m.day] = count
-		return
+	counts, err := store.LoadCheckCounts(m.dataPath)
+	if err != nil {
+		return err
 	}
-	delete(m.activeDays, m.day)
-	delete(m.dayCounts, m.day)
+	m.outline = outline
+	m.checked = checked
+	m.activeDays = active
+	m.dayCounts = counts
+	return nil
 }
 
 // contributionLevelStyle is a gray ramp.
@@ -577,49 +568,28 @@ func (m *boxModel) commitBoxCompose() {
 		m.status = "Box cannot be empty."
 		return
 	}
-	previous := m.outline
-	previousSelected := m.selected
-	var (
-		next box.Outline
-		id   string
-		err  error
-	)
+	items := m.outline.Flatten()
+	selected := 0
+	if len(items) > 0 {
+		m.clamp()
+		selected = items[m.selected].ID
+	}
+	var err error
 	status := "Updated " + text + "."
 	if m.composeNew {
-		selected := ""
-		items := m.outline.Flatten()
-		if len(items) > 0 {
-			m.clamp()
-			selected = items[m.selected].ID
-		}
-		next, id, err = m.outline.InsertAfter(selected, text)
+		selected, err = store.AddBox(m.dataPath, selected, text)
 		status = "Added " + text + "."
+	} else if len(items) == 0 {
+		m.status = "No box selected to edit."
+		return
 	} else {
-		items := m.outline.Flatten()
-		if len(items) == 0 {
-			m.status = "No box selected to edit."
-			return
-		}
-		m.clamp()
-		id = items[m.selected].ID
-		next, err = m.outline.Rename(id, text)
+		err = store.RenameBox(m.dataPath, selected, text)
 	}
-	if err != nil {
-		m.errText = err.Error()
-		m.status = ""
+	m.apply(err, status)
+	if err != nil || m.errText != "" {
 		return
 	}
-	m.outline = next
-	if m.composeNew {
-		m.selectID(id)
-	}
-	if err := m.persistOutline(status); err != nil {
-		m.outline = previous
-		m.selected = previousSelected
-		m.errText = err.Error()
-		m.status = ""
-		return
-	}
+	m.selectID(selected)
 	m.cancelBoxCompose()
 }
 
@@ -638,66 +608,20 @@ func (m *boxModel) deleteSelectedBox() {
 	m.pendingDelete = false
 	m.clamp()
 	item := items[m.selected]
-	next, err := m.outline.Delete(item.ID)
-	if err != nil {
-		m.errText = err.Error()
-		m.status = ""
-		return
-	}
-	previous := m.outline
-	previousSelected := m.selected
-	m.outline = next
-	if m.selected >= len(m.outline.Flatten()) {
-		m.selected = max(0, len(m.outline.Flatten())-1)
-	}
 	status := "Deleted " + item.Label + "."
 	if item.HasChildren {
 		status = "Deleted " + item.Label + " and the boxes under it."
 	}
-	if err := m.persistOutline(status); err != nil {
-		m.outline = previous
-		m.selected = previousSelected
-		m.errText = err.Error()
-		m.status = ""
-	}
+	m.apply(store.DeleteBox(m.dataPath, item.ID), status)
 }
 
-func (m *boxModel) selectID(id string) {
+func (m *boxModel) selectID(id int) {
 	for index, item := range m.outline.Flatten() {
 		if item.ID == id {
 			m.selected = index
 			return
 		}
 	}
-}
-
-// Architecture exception (gates §2.6, §2.17): box mode edits its copy of the
-// outline and saves it whole, so a box CLI edit made while the mode is open is
-// overwritten. Checks and counts are reloaded after each save. Remove once
-// outline edits become store operations on one box.
-func (m *boxModel) persistOutline(status string) error {
-	if err := store.SaveOutline(m.dataPath, m.outline); err != nil {
-		return err
-	}
-	checked, err := store.LoadDayChecks(m.dataPath, m.day)
-	if err != nil {
-		return err
-	}
-	active, err := store.LoadActiveDays(m.dataPath)
-	if err != nil {
-		return err
-	}
-	counts, err := store.LoadCheckCounts(m.dataPath)
-	if err != nil {
-		return err
-	}
-	m.checked = checked
-	m.activeDays = active
-	m.dayCounts = counts
-	m.errText = ""
-	m.status = status
-	m.clamp()
-	return nil
 }
 
 func (m *boxModel) clamp() {

@@ -14,8 +14,7 @@ import (
 )
 
 func TestBoxToggleSavesAndDayMoveDoesNotCreateRows(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("SQLX_ROOT", root)
+	isolateSQLX(t)
 	outlinePath := filepath.Join(t.TempDir(), "rituals.txt")
 	if err := os.WriteFile(outlinePath, []byte("Move\nWork\n  Email\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -30,11 +29,16 @@ func TestBoxToggleSavesAndDayMoveDoesNotCreateRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	items := outline.Flatten()
+	if anyOf(len(items) != 3, items[2].Label != "Email", items[2].ID == 0) {
+		t.Fatalf("imported outline = %#v", items)
+	}
+	email := items[2].ID
 	m := newBoxModel(db, outline, nil, "2026-10-20")
 	m.selected = 2
 	m.toggleSelected()
 	checked, err := store.LoadDayChecks(db, "2026-10-20")
-	if anyOf(err != nil, !checked["work/email"]) {
+	if anyOf(err != nil, !checked[email], len(checked) != 1, !m.checked[email]) {
 
 		t.Fatalf("checks = %#v err=%v", checked, err)
 	}
@@ -52,12 +56,12 @@ func TestBoxToggleSavesAndDayMoveDoesNotCreateRows(t *testing.T) {
 
 func TestModeKeyDoesNotToggle(t *testing.T) {
 	isolateSQLX(t)
-	m := newAppModel(filepath.Join(t.TempDir(), "tasks.sqlite"), nil)
+	m := newAppModel(filepath.Join(t.TempDir(), "tasks.sqlite"), sampleRecords(t))
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
-	got := next.(appModel)
-	if anyOf(got.mode != modeDo, cmd != nil) {
+	got, ok := next.(appModel)
+	if anyOf(!ok, cmd != nil, got.status != "", len(got.records) != 3, got.records[0].Align.Done()) {
 
-		t.Fatalf("mode=%q cmd=%v", got.mode, cmd != nil)
+		t.Fatalf("type=%T cmd=%v status=%q", next, cmd != nil, got.status)
 	}
 }
 
@@ -106,8 +110,8 @@ func TestBoxShortcutsStayHiddenUntilHelp(t *testing.T) {
 
 func TestModeBadgesShareTheGrayCorner(t *testing.T) {
 	forceStyledOutput(t)
-	do := appModel{mode: modeDo, view: viewAgenda, width: 48, height: 12}
-	align := appModel{mode: modeAlign, view: viewAgenda, width: 48, height: 12}
+	do := doModel{width: 48, height: 12}
+	align := appModel{width: 48, height: 12}
 	box := newBoxModel("", box.Outline{}, nil, "2026-10-20")
 	box.width = 48
 	views := []struct {
@@ -315,19 +319,33 @@ func TestContributionCalendar(t *testing.T) {
 func TestSaveUpdatesTheStreakDay(t *testing.T) {
 	isolateSQLX(t)
 	path := filepath.Join(t.TempDir(), "crusade.sqlite")
-	t.Setenv("BOXES_CONFIG", "")
 	day := time.Now().Local().Format(time.DateOnly)
-	m := newBoxModel(path, box.Outline{}, map[string]bool{"move": true}, day)
+	id, err := store.AddBox(path, 0, "Move")
+	if err != nil {
+		t.Fatal(err)
+	}
+	outline, err := store.LoadOutline(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newBoxModel(path, outline, nil, day)
 	m.activeDays = map[string]bool{}
-	m.save("checked")
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
+	m = next.(boxModel)
+	if anyOf(!m.checked[id], m.status != "Checked Move.", m.errText != "") {
+		t.Fatalf("checked=%v status=%q err=%q", m.checked, m.status, m.errText)
+	}
 	if !m.activeDays[day] {
 		t.Fatal("checked day was not marked active")
 	}
 	if m.dayCounts[day] != 1 {
 		t.Fatalf("count = %d", m.dayCounts[day])
 	}
-	m.checked = map[string]bool{}
-	m.save("reset")
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	m = next.(boxModel)
+	if anyOf(len(m.checked) != 0, m.status != "Reset "+day+".") {
+		t.Fatalf("reset checked=%v status=%q", m.checked, m.status)
+	}
 	if m.activeDays[day] {
 		t.Fatal("empty day stayed active")
 	}
@@ -342,9 +360,7 @@ func TestSaveUpdatesTheStreakDay(t *testing.T) {
 }
 
 func TestBoxKeysCreateEditAndDeleteInPlace(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("SQLX_ROOT", root)
-	t.Setenv("BOXES_CONFIG", filepath.Join(t.TempDir(), "missing-outline.txt"))
+	isolateSQLX(t)
 	db := store.DatabasePath()
 	if _, err := store.Open(db); err != nil {
 		t.Fatal(err)
@@ -374,9 +390,19 @@ func TestBoxKeysCreateEditAndDeleteInPlace(t *testing.T) {
 	}
 	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got = next.(boxModel)
-	if anyOf(cmd != nil, got.composing, !strings.Contains(got.View(), "Prayq")) {
+	if anyOf(cmd != nil, got.composing, !strings.Contains(got.View(), "Prayq"), got.status != "Added Prayq.") {
 
-		t.Fatalf("created cmd=%v composing=%v\n%s", cmd != nil, got.composing, got.View())
+		t.Fatalf("created cmd=%v composing=%v status=%q\n%s", cmd != nil, got.composing, got.status, got.View())
+	}
+	created, err := store.LoadOutline(db)
+	if anyOf(err != nil, len(created.Flatten()) != 1) {
+		t.Fatalf("created = %#v err=%v", created, err)
+	}
+	id := created.Flatten()[0].ID
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
+	got = next.(boxModel)
+	if !got.checked[id] {
+		t.Fatalf("space did not check box %d: %v", id, got.checked)
 	}
 
 	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
@@ -403,10 +429,14 @@ func TestBoxKeysCreateEditAndDeleteInPlace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	item, ok := loaded.ItemByID("prayq")
-	if anyOf(!ok, item.Label != "Amen") {
+	item, ok := loaded.ItemByID(id)
+	if anyOf(!ok, item.Label != "Amen", len(loaded.Flatten()) != 1) {
 
 		t.Fatalf("stored = %#v ok=%v", item, ok)
+	}
+	checks, err := store.LoadDayChecks(db, "2026-10-30")
+	if anyOf(err != nil, !checks[id], !got.checked[id], !strings.Contains(got.View(), "[x] Amen")) {
+		t.Fatalf("rename lost the check: %v err=%v\n%s", checks, err, got.View())
 	}
 
 	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
@@ -425,6 +455,10 @@ func TestBoxKeysCreateEditAndDeleteInPlace(t *testing.T) {
 	if anyOf(err != nil, len(loaded.Flatten()) != 0) {
 
 		t.Fatalf("left = %#v err=%v", loaded.Flatten(), err)
+	}
+	checks, err = store.LoadDayChecks(db, "2026-10-30")
+	if anyOf(err != nil, len(checks) != 0) {
+		t.Fatalf("delete left checks %v err=%v", checks, err)
 	}
 }
 

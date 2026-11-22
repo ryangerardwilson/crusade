@@ -1,7 +1,6 @@
 package store
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -9,17 +8,9 @@ import (
 	"github.com/ryangerardwilson/crusade/internal/model"
 )
 
-func TestBlocksRoundTripApartFromDoTasks(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("SQLX_ROOT", root)
-	t.Setenv("BOXES_CONFIG", filepath.Join(t.TempDir(), "missing.txt"))
-	db := DatabasePath()
-
-	do, err := model.NewDoEvent("2026-11-02 23:59:59", "mail the letter")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := Add(db, do); err != nil {
+func TestBlocksRoundTripApartFromDoItems(t *testing.T) {
+	db := testDB(t)
+	if _, err := AddDoItem(db, 0, "mail the letter"); err != nil {
 		t.Fatal(err)
 	}
 	block, err := model.NewBlock("deep work", "2026-11-02 09:00:00", "2026-11-02 10:00:00")
@@ -28,26 +19,30 @@ func TestBlocksRoundTripApartFromDoTasks(t *testing.T) {
 	}
 	id, err := AddBlock(db, block)
 	if anyOf(err != nil, id <= 0) {
-
 		t.Fatalf("id=%d err=%v", id, err)
 	}
 	loaded, err := LoadBlocks(db)
 	if anyOf(err != nil, len(loaded) != 1, loaded[0].ID != id, loaded[0].Block.Title != "deep work", loaded[0].Block.Start.Format("15:04") != "09:00", loaded[0].Block.End.Format("15:04") != "10:00") {
-
 		t.Fatalf("loaded=%+v err=%v", loaded, err)
 	}
-	tasks, err := Load(db)
-	if anyOf(err != nil, len(tasks) != 1, tasks[0].Event.Y != "mail the letter", !tasks[0].Event.IsDo()) {
-
-		t.Fatalf("tasks=%+v err=%v", tasks, err)
+	list, err := LoadDoList(db)
+	if anyOf(err != nil, len(list) != 1, list[0].Body != "mail the letter") {
+		t.Fatalf("do list=%+v err=%v", list, err)
 	}
+	if records, err := Load(db); anyOf(err != nil, len(records) != 0) {
+		t.Fatalf("align records=%+v err=%v", records, err)
+	}
+	assertBlockConflictsAndRename(t, db, id)
+	assertBlockClockRules(t, db)
+}
 
+func assertBlockConflictsAndRename(t *testing.T, db string, id int) {
+	t.Helper()
 	overlap, err := model.NewBlock("other", "2026-11-02 09:00:00", "2026-11-02 10:00:00")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := AddBlock(db, overlap); anyOf(err == nil, !strings.Contains(err.Error(), "already blocked")) {
-
+	if _, err := AddBlock(db, overlap); anyOf(err == nil, err != nil && !strings.Contains(err.Error(), "already blocked")) {
 		t.Fatalf("overlap err=%v", err)
 	}
 	touch, err := model.NewBlock("next", "2026-11-02 10:00:00", "2026-11-02 11:00:00")
@@ -65,17 +60,15 @@ func TestBlocksRoundTripApartFromDoTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	renamed, err := model.NewBlock("focus", "2026-11-02 09:00:00", "2026-11-02 10:00:00")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := UpdateBlock(db, id, renamed); err != nil {
-		t.Fatal(err)
+	form := model.CalForm{Title: "focus", StartHour: 9, EndHour: 10}
+	saved, err := SaveForm(db, FormTarget{BlockID: id}, form)
+	if anyOf(err != nil, saved.BlockID != id, saved.Change != model.ChangeRenamed) {
+		t.Fatalf("rename = %#v %v", saved, err)
 	}
 	if err := DeleteBlock(db, quoteID); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err = LoadBlocks(db)
+	loaded, err := LoadBlocks(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,6 +79,10 @@ func TestBlocksRoundTripApartFromDoTasks(t *testing.T) {
 	if strings.Join(titles, ",") != "focus,next" {
 		t.Fatalf("titles=%v", titles)
 	}
+}
+
+func assertBlockClockRules(t *testing.T, db string) {
+	t.Helper()
 	if _, err := model.NewBlock("night", "2026-11-02 23:00:00", "2026-11-03 00:30:00"); err == nil {
 		t.Fatal("overnight block was accepted")
 	}
@@ -96,8 +93,7 @@ func TestBlocksRoundTripApartFromDoTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := AddBlock(db, half); anyOf(err == nil, !strings.Contains(err.Error(), "on the hour")) {
-
+	if _, err := AddBlock(db, half); anyOf(err == nil, err != nil && !strings.Contains(err.Error(), "on the hour")) {
 		t.Fatalf("half hour = %v", err)
 	}
 	last, err := model.NewBlock("late", "2026-11-04 23:00:00", "2026-11-05 00:00:00")
@@ -109,12 +105,12 @@ func TestBlocksRoundTripApartFromDoTasks(t *testing.T) {
 	}
 }
 
-func TestMeetingURLMigratesAndRoundTrips(t *testing.T) {
-	old := `CREATE TABLE block (
+const meetingURLLegacy = `CREATE TABLE block (
   id INTEGER PRIMARY KEY,
   title TEXT NOT NULL,
   start_at TEXT NOT NULL,
-  end_at TEXT NOT NULL
+  end_at TEXT NOT NULL,
+  url TEXT
 );
 INSERT INTO block(id, title, start_at, end_at) VALUES (1, 'deep work', '2026-11-02 09:00:00', '2026-11-02 10:00:00');
 CREATE TABLE repeat (
@@ -123,7 +119,8 @@ CREATE TABLE repeat (
   start_at TEXT NOT NULL,
   end_at TEXT NOT NULL,
   freq TEXT NOT NULL,
-  until_on TEXT
+  until_on TEXT,
+  url TEXT
 );
 INSERT INTO repeat(id, title, start_at, end_at, freq) VALUES (1, 'standup', '2026-11-02 11:00:00', '2026-11-02 11:15:00', 'weekly');
 CREATE TABLE repeat_change (
@@ -133,66 +130,69 @@ CREATE TABLE repeat_change (
   skipped INTEGER NOT NULL,
   title TEXT,
   start_at TEXT,
-  end_at TEXT
+  end_at TEXT,
+  url TEXT
 );
 INSERT INTO repeat_change(id, repeat_id, day, skipped, title, start_at, end_at) VALUES (1, 1, '2026-11-09', 0, 'interview', '2026-11-09 11:00:00', '2026-11-09 11:15:00');
 `
-	path := seedSQLite(t, old)
+
+func TestMeetingURLMigratesAndRoundTrips(t *testing.T) {
+	path := seedSQLite(t, meetingURLLegacy)
 	if _, err := Open(path); err != nil {
 		t.Fatal(err)
 	}
 	blocks, err := LoadBlocks(path)
 	if anyOf(err != nil, len(blocks) != 1, blocks[0].Block.URL != "", blocks[0].Block.Title != "deep work") {
-
 		t.Fatalf("block %#v %v", blocks, err)
 	}
 	repeats, err := LoadRepeats(path)
 	if anyOf(err != nil, len(repeats) != 1, repeats[0].Repeat.URL != "", repeats[0].Repeat.Title != "standup") {
-
 		t.Fatalf("repeat %#v %v", repeats, err)
 	}
-	changes, err := LoadRepeatChanges(path)
-	if anyOf(err != nil, len(changes) != 1, changes[0].HasURL, changes[0].Title != "interview") {
-
-		t.Fatalf("change %#v %v", changes, err)
+	nov9 := time.Date(2026, 11, 9, 0, 0, 0, 0, time.Local)
+	override, ok := repeats[0].OverrideOn(nov9)
+	if anyOf(!ok, override.URL != "", override.Title != "interview", override.HasClock()) {
+		t.Fatalf("override %#v", repeats[0].Overrides)
 	}
-	blocks[0].Block.URL = " https://meet.example/o'clock "
-	if err := UpdateBlock(path, blocks[0].ID, blocks[0].Block); err != nil {
+	blockForm := model.CalForm{Title: "deep work", StartHour: 9, EndHour: 10, URL: " https://meet.example/o'clock "}
+	if _, err := SaveForm(path, FormTarget{BlockID: blocks[0].ID}, blockForm); err != nil {
 		t.Fatal(err)
 	}
 	blocks, err = LoadBlocks(path)
 	if anyOf(err != nil, len(blocks) != 1, blocks[0].Block.URL != "https://meet.example/o'clock") {
-
 		t.Fatalf("block url %#v %v", blocks, err)
 	}
-	repeats[0].Repeat.URL = "https://meet.example/stand"
-	if err := UpdateRepeat(path, repeats[0].ID, repeats[0].Repeat); err != nil {
+	assertMinuteSeriesURL(t, path, repeats[0].ID, nov9)
+}
+
+func assertMinuteSeriesURL(t *testing.T, path string, id int, nov9 time.Time) {
+	t.Helper()
+	nov2 := time.Date(2026, 11, 2, 0, 0, 0, 0, time.Local)
+	target := FormTarget{RepeatID: id, Day: nov2}
+	form := model.CalForm{Title: "standup", StartHour: 11, EndHour: 11, EndMinute: 15, Freq: "weekly", URL: "https://meet.example/stand", Scope: model.ScopeAll}
+	if _, err := SaveForm(path, target, form); err != nil {
 		t.Fatalf("url on a minute series = %v", err)
 	}
-	repeats, err = LoadRepeats(path)
+	repeats, err := LoadRepeats(path)
 	if anyOf(err != nil, len(repeats) != 1, repeats[0].Repeat.URL != "https://meet.example/stand", repeats[0].Repeat.End.Minute() != 15) {
-
 		t.Fatalf("kept minute clock %#v %v", repeats, err)
 	}
-	moved := repeats[0].Repeat
-	moved.End = moved.Start.Add(20 * time.Minute)
-	if err := UpdateRepeat(path, repeats[0].ID, moved); anyOf(err == nil, !strings.Contains(err.Error(), "on the hour")) {
-
+	if occurrence, ok := repeats[0].On(nov9); anyOf(!ok, occurrence.Title != "interview", occurrence.URL != "https://meet.example/stand") {
+		t.Fatalf("overridden day %#v", occurrence)
+	}
+	moved := form
+	moved.EndMinute = 20
+	if _, err := SaveForm(path, target, moved); anyOf(err == nil, err != nil && !strings.Contains(err.Error(), "on the hour")) {
 		t.Fatalf("moved minute repeat = %v", err)
 	}
-	repeats[0].Repeat.End = repeats[0].Repeat.Start.Add(time.Hour)
-	if err := UpdateRepeat(path, repeats[0].ID, repeats[0].Repeat); err != nil {
+	hour := form
+	hour.EndHour, hour.EndMinute = 12, 0
+	if _, err := SaveForm(path, target, hour); err != nil {
 		t.Fatal(err)
 	}
 	repeats, err = LoadRepeats(path)
-	if anyOf(err != nil, len(repeats) != 1, repeats[0].Repeat.URL != "https://meet.example/stand") {
-
-		t.Fatalf("repeat url %#v %v", repeats, err)
-	}
-	changes, err = LoadRepeatChanges(path)
-	if anyOf(err != nil, len(changes) != 1, changes[0].HasURL) {
-
-		t.Fatalf("inherited change %#v %v", changes, err)
+	if anyOf(err != nil, len(repeats) != 1, repeats[0].Repeat.URL != "https://meet.example/stand", repeats[0].Repeat.End.Hour() != 12, len(repeats[0].Overrides) != 0) {
+		t.Fatalf("rescheduled series %#v %v", repeats, err)
 	}
 }
 

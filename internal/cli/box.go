@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ryangerardwilson/crusade/internal/box"
+	"github.com/ryangerardwilson/crusade/internal/boxyaml"
 	"github.com/ryangerardwilson/crusade/internal/store"
 )
 
@@ -51,7 +52,7 @@ func showBoxes(dbPath string, args []string, stdout io.Writer) int {
 		case box.Partial:
 			mark = "[~]"
 		}
-		fmt.Fprintf(stdout, "%s%s %s  %s\n", indent(item.Depth), mark, item.ID, item.Label)
+		fmt.Fprintf(stdout, "%s%s %d  %s\n", indent(item.Depth), mark, item.ID, item.Label)
 	}
 	return 0
 }
@@ -62,7 +63,7 @@ func editBoxes(dbPath string, stdout io.Writer) int {
 		fmt.Fprintln(stdout, err)
 		return 1
 	}
-	payload, err := box.MarshalYAML(outline)
+	payload, err := boxyaml.Marshal(outline)
 	if err != nil {
 		fmt.Fprintln(stdout, err)
 		return 1
@@ -100,7 +101,7 @@ func editBoxes(dbPath string, stdout io.Writer) int {
 		fmt.Fprintln(stdout, err)
 		return 1
 	}
-	next, err := box.ParseYAML(edited)
+	next, err := boxyaml.Parse(edited)
 	if err != nil {
 		fmt.Fprintln(stdout, err)
 		return 1
@@ -128,7 +129,7 @@ func editorCommand() []string {
 	return parts
 }
 
-func todayBoxes(dbPath string) (box.Outline, map[string]bool, string, error) {
+func todayBoxes(dbPath string) (box.Outline, map[int]bool, string, error) {
 	outline, err := store.LoadOutline(dbPath)
 	if err != nil {
 		return box.Outline{}, nil, "", err

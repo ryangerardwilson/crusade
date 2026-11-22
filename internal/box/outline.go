@@ -6,8 +6,10 @@ import (
 	"unicode"
 )
 
+// Item is one box. ID is the stored box id, or zero for a box parsed from
+// text that is not stored yet.
 type Item struct {
-	ID       string
+	ID       int
 	Label    string
 	Children []Item
 }
@@ -17,7 +19,7 @@ type Outline struct {
 }
 
 type FlatItem struct {
-	ID          string
+	ID          int
 	Label       string
 	Depth       int
 	HasChildren bool
@@ -31,14 +33,10 @@ const (
 	Checked
 )
 
+// ParseOutline reads an indented text outline, two spaces per level.
 func ParseOutline(text string) (Outline, error) {
-	type pending struct {
-		depth int
-		item  Item
-	}
 	var roots []Item
-	stack := []pending{}
-	seen := map[string]struct{}{}
+	var stack []*[]Item
 	for lineNumber, rawLine := range strings.Split(text, "\n") {
 		if strings.TrimSpace(rawLine) == "" || strings.HasPrefix(strings.TrimSpace(rawLine), "#") {
 			continue
@@ -54,35 +52,13 @@ func ParseOutline(text string) (Outline, error) {
 			return Outline{}, fmt.Errorf("line %d: indentation jumps more than one level", lineNumber+1)
 		}
 		stack = stack[:depth]
-		parts := make([]string, 0, len(stack)+1)
-		for _, parent := range stack {
-			parts = append(parts, parent.item.ID)
-		}
-		parts = append(parts, normalizeID(label))
-		id := strings.Join(parts, "/")
-		if id == "" {
-			return Outline{}, fmt.Errorf("line %d: item label must contain a letter or number", lineNumber+1)
-		}
-		if _, ok := seen[id]; ok {
-			return Outline{}, fmt.Errorf("line %d: duplicate item id %q", lineNumber+1, id)
-		}
-		seen[id] = struct{}{}
-		item := Item{ID: id, Label: label}
-		if depth == 0 {
-			roots = append(roots, item)
-			stack = append(stack, pending{depth: depth, item: item})
-			continue
-		}
 		parent := &roots
-		for _, ancestor := range stack {
-			found := findItem(parent, ancestor.item.ID)
-			if found == nil {
-				return Outline{}, fmt.Errorf("line %d: internal outline parent lookup failed", lineNumber+1)
-			}
-			parent = &found.Children
+		if depth > 0 {
+			siblings := stack[depth-1]
+			parent = &(*siblings)[len(*siblings)-1].Children
 		}
-		*parent = append(*parent, item)
-		stack = append(stack, pending{depth: depth, item: item})
+		*parent = append(*parent, Item{Label: label})
+		stack = append(stack, parent)
 	}
 	outline := Outline{Items: roots}
 	if err := outline.Validate(); err != nil {
@@ -91,26 +67,23 @@ func ParseOutline(text string) (Outline, error) {
 	return outline, nil
 }
 
+// Validate checks that every box has a label with a letter or number, that
+// no two boxes under one parent share a label, and that stored ids are unique.
 func (o Outline) Validate() error {
-	seen := map[string]struct{}{}
+	seen := map[int]bool{}
 	var walk func(items []Item) error
 	walk = func(items []Item) error {
+		keys := map[string]bool{}
 		for _, item := range items {
-			id := strings.TrimSpace(item.ID)
-			label := strings.TrimSpace(item.Label)
-			if id == "" {
-				return fmt.Errorf("item %q has empty id", label)
+			if err := checkLabel(item.Label, keys); err != nil {
+				return err
 			}
-			if label == "" {
-				return fmt.Errorf("item %q has empty label", id)
+			if item.ID != 0 {
+				if seen[item.ID] {
+					return fmt.Errorf("duplicate box id %d", item.ID)
+				}
+				seen[item.ID] = true
 			}
-			if strings.ContainsAny(id, " \t\r\n") {
-				return fmt.Errorf("item id %q must not contain whitespace", id)
-			}
-			if _, ok := seen[id]; ok {
-				return fmt.Errorf("duplicate item id %q", id)
-			}
-			seen[id] = struct{}{}
 			if err := walk(item.Children); err != nil {
 				return err
 			}
@@ -118,6 +91,22 @@ func (o Outline) Validate() error {
 		return nil
 	}
 	return walk(o.Items)
+}
+
+func checkLabel(label string, siblings map[string]bool) error {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return fmt.Errorf("box text cannot be empty")
+	}
+	key := Key(label)
+	if key == "" {
+		return fmt.Errorf("box text must contain a letter or number")
+	}
+	if siblings[key] {
+		return fmt.Errorf("a box named %q already exists", label)
+	}
+	siblings[key] = true
+	return nil
 }
 
 func MarshalOutline(outline Outline) string {
@@ -141,12 +130,7 @@ func (o Outline) Flatten() []FlatItem {
 	var walk func(items []Item, depth int)
 	walk = func(items []Item, depth int) {
 		for _, item := range items {
-			flat = append(flat, FlatItem{
-				ID:          item.ID,
-				Label:       item.Label,
-				Depth:       depth,
-				HasChildren: len(item.Children) > 0,
-			})
+			flat = append(flat, FlatItem{ID: item.ID, Label: item.Label, Depth: depth, HasChildren: len(item.Children) > 0})
 			walk(item.Children, depth+1)
 		}
 	}
@@ -154,7 +138,25 @@ func (o Outline) Flatten() []FlatItem {
 	return flat
 }
 
-func (o Outline) ItemByID(id string) (Item, bool) {
+// Paths is the label path of each box, as parent/child keys, in Flatten order.
+func (o Outline) Paths() []string {
+	var paths []string
+	var walk func(items []Item, parent string)
+	walk = func(items []Item, parent string) {
+		for _, item := range items {
+			path := Key(item.Label)
+			if parent != "" {
+				path = parent + "/" + path
+			}
+			paths = append(paths, path)
+			walk(item.Children, path)
+		}
+	}
+	walk(o.Items, "")
+	return paths
+}
+
+func (o Outline) ItemByID(id int) (Item, bool) {
 	for _, item := range o.Items {
 		if found, ok := itemByID(item, id); ok {
 			return found, true
@@ -163,7 +165,7 @@ func (o Outline) ItemByID(id string) (Item, bool) {
 	return Item{}, false
 }
 
-func (o Outline) LeafIDsFor(id string) []string {
+func (o Outline) LeafIDsFor(id int) []int {
 	item, ok := o.ItemByID(id)
 	if !ok {
 		return nil
@@ -171,8 +173,8 @@ func (o Outline) LeafIDsFor(id string) []string {
 	return item.leafIDs()
 }
 
-func (o Outline) LeafIDs() []string {
-	var ids []string
+func (o Outline) LeafIDs() []int {
+	var ids []int
 	for _, item := range o.Items {
 		ids = append(ids, item.leafIDs()...)
 	}
@@ -183,7 +185,7 @@ func (o Outline) LeafCount() int {
 	return len(o.LeafIDs())
 }
 
-func (o Outline) StatusFor(id string, checked map[string]bool) Status {
+func (o Outline) StatusFor(id int, checked map[int]bool) Status {
 	leaves := o.LeafIDsFor(id)
 	if len(leaves) == 0 {
 		return Unchecked
@@ -194,16 +196,17 @@ func (o Outline) StatusFor(id string, checked map[string]bool) Status {
 			count++
 		}
 	}
-	if count == 0 {
+	switch count {
+	case 0:
 		return Unchecked
-	}
-	if count == len(leaves) {
+	case len(leaves):
 		return Checked
+	default:
+		return Partial
 	}
-	return Partial
 }
 
-func (o Outline) CompletedCount(checked map[string]bool) int {
+func (o Outline) CompletedCount(checked map[int]bool) int {
 	count := 0
 	for _, leaf := range o.LeafIDs() {
 		if checked[leaf] {
@@ -213,43 +216,76 @@ func (o Outline) CompletedCount(checked map[string]bool) int {
 	return count
 }
 
-func ApplyCheck(outline Outline, checked map[string]bool, id string, on bool) (map[string]bool, error) {
-	if _, ok := outline.ItemByID(id); !ok {
-		return nil, fmt.Errorf("unknown item id %q", id)
+// Toggle is the check a press of space on id makes: the leaves under id, and
+// whether they become checked.
+func (o Outline) Toggle(id int, checked map[int]bool) ([]int, bool, error) {
+	if _, ok := o.ItemByID(id); !ok {
+		return nil, false, fmt.Errorf("unknown box id %d", id)
 	}
-	next := map[string]bool{}
-	for leaf, value := range checked {
-		if value {
-			next[leaf] = true
-		}
-	}
-	for _, leaf := range outline.LeafIDsFor(id) {
-		if on {
-			next[leaf] = true
-		} else {
-			delete(next, leaf)
-		}
-	}
-	return next, nil
+	return o.LeafIDsFor(id), o.StatusFor(id, checked) != Checked, nil
 }
 
-func Toggle(outline Outline, checked map[string]bool, id string) (map[string]bool, error) {
-	on := outline.StatusFor(id, checked) != Checked
-	return ApplyCheck(outline, checked, id, on)
+// PlaceAfter is where a new box labelled label goes: beside selectedID,
+// right after it. The parent is zero for a root. An empty outline puts it
+// first.
+func (o Outline) PlaceAfter(selectedID int, label string) (int, int, error) {
+	if len(o.Items) == 0 {
+		return 0, 0, checkLabel(label, map[string]bool{})
+	}
+	parent, siblings, index, ok := locate(o.Items, 0, selectedID)
+	if !ok {
+		return 0, 0, fmt.Errorf("selected box was not found")
+	}
+	if err := checkLabel(label, siblingKeys(siblings, 0)); err != nil {
+		return 0, 0, err
+	}
+	return parent, index + 1, nil
 }
 
-func (i Item) leafIDs() []string {
+// CheckRename reports whether id may take label.
+func (o Outline) CheckRename(id int, label string) error {
+	_, siblings, _, ok := locate(o.Items, 0, id)
+	if !ok {
+		return fmt.Errorf("selected box was not found")
+	}
+	return checkLabel(label, siblingKeys(siblings, id))
+}
+
+func siblingKeys(items []Item, except int) map[string]bool {
+	keys := map[string]bool{}
+	for _, item := range items {
+		if item.ID != except {
+			keys[Key(item.Label)] = true
+		}
+	}
+	return keys
+}
+
+// locate finds id and returns its parent id, its siblings, and its index.
+func locate(items []Item, parent, id int) (int, []Item, int, bool) {
+	for index, item := range items {
+		if item.ID == id {
+			return parent, items, index, true
+		}
+		if p, siblings, at, ok := locate(item.Children, item.ID, id); ok {
+			return p, siblings, at, true
+		}
+	}
+	return 0, nil, 0, false
+}
+
+func (i Item) leafIDs() []int {
 	if len(i.Children) == 0 {
-		return []string{i.ID}
+		return []int{i.ID}
 	}
-	var ids []string
+	var ids []int
 	for _, child := range i.Children {
 		ids = append(ids, child.leafIDs()...)
 	}
 	return ids
 }
 
-func itemByID(item Item, id string) (Item, bool) {
+func itemByID(item Item, id int) (Item, bool) {
 	if item.ID == id {
 		return item, true
 	}
@@ -261,28 +297,17 @@ func itemByID(item Item, id string) (Item, bool) {
 	return Item{}, false
 }
 
-func findItem(items *[]Item, id string) *Item {
-	for index := range *items {
-		if (*items)[index].ID == id {
-			return &(*items)[index]
-		}
-	}
-	return nil
-}
-
 func parseOutlineLine(rawLine string) (int, string, error) {
 	spaces := 0
 	for _, r := range rawLine {
-		switch r {
-		case ' ':
+		if r == ' ' {
 			spaces++
-		case '\t':
+		} else if r == '\t' {
 			spaces += 2
-		default:
-			goto done
+		} else {
+			break
 		}
 	}
-done:
 	if spaces%2 != 0 {
 		return 0, "", fmt.Errorf("indent with two spaces per level")
 	}
@@ -299,7 +324,9 @@ done:
 	return spaces / 2, strings.TrimSpace(label), nil
 }
 
-func normalizeID(label string) string {
+// Key is the label as a lowercase slug. Two boxes under one parent may not
+// share a key.
+func Key(label string) string {
 	var b strings.Builder
 	lastBreak := false
 	for _, r := range strings.ToLower(strings.TrimSpace(label)) {
@@ -307,166 +334,14 @@ func normalizeID(label string) string {
 		case unicode.IsLetter(r) || unicode.IsDigit(r):
 			b.WriteRune(r)
 			lastBreak = false
-		case r == '-' || r == '_':
-			if b.Len() > 0 && !lastBreak {
+		case b.Len() > 0 && !lastBreak:
+			if r == '_' {
 				b.WriteRune(r)
-				lastBreak = true
-			}
-		default:
-			if b.Len() > 0 && !lastBreak {
+			} else {
 				b.WriteRune('-')
-				lastBreak = true
 			}
+			lastBreak = true
 		}
 	}
 	return strings.Trim(b.String(), "-_")
-}
-
-// InsertAfter adds a box at the same level as selectedID, immediately after it.
-// An empty outline ignores selectedID and adds the first box.
-func (o Outline) InsertAfter(selectedID, label string) (Outline, string, error) {
-	label = strings.TrimSpace(label)
-	if label == "" {
-		return o, "", fmt.Errorf("box text cannot be empty")
-	}
-	if len(o.Items) == 0 {
-		id, err := childID("", label)
-		if err != nil {
-			return o, "", err
-		}
-		o.Items = []Item{{ID: id, Label: label}}
-		return o, id, nil
-	}
-	parent, ok := findParent(o.Items, selectedID, "")
-	if !ok {
-		return o, "", fmt.Errorf("selected box was not found")
-	}
-	id, err := childID(parent, label)
-	if err != nil {
-		return o, "", err
-	}
-	if _, exists := o.ItemByID(id); exists {
-		return o, "", fmt.Errorf("a box named %q already exists", label)
-	}
-	items, ok := insertAfterID(o.Items, selectedID, Item{ID: id, Label: label})
-	if !ok {
-		return o, "", fmt.Errorf("selected box was not found")
-	}
-	o.Items = items
-	if err := o.Validate(); err != nil {
-		return Outline{}, "", err
-	}
-	return o, id, nil
-}
-
-// Rename changes the label and keeps the id, so existing checks stay with the box.
-func (o Outline) Rename(id, label string) (Outline, error) {
-	label = strings.TrimSpace(label)
-	if label == "" {
-		return o, fmt.Errorf("box text cannot be empty")
-	}
-	items, ok := renameID(o.Items, id, label)
-	if !ok {
-		return o, fmt.Errorf("selected box was not found")
-	}
-	o.Items = items
-	if err := o.Validate(); err != nil {
-		return Outline{}, err
-	}
-	return o, nil
-}
-
-// Delete removes the box and every box under it.
-func (o Outline) Delete(id string) (Outline, error) {
-	items, ok := deleteID(o.Items, id)
-	if !ok {
-		return o, fmt.Errorf("selected box was not found")
-	}
-	o.Items = items
-	return o, nil
-}
-
-func childID(parent, label string) (string, error) {
-	slug := normalizeID(label)
-	if slug == "" {
-		return "", fmt.Errorf("box text must contain a letter or number")
-	}
-	if parent == "" {
-		return slug, nil
-	}
-	return parent + "/" + slug, nil
-}
-
-func findParent(items []Item, id, parent string) (string, bool) {
-	for _, item := range items {
-		if item.ID == id {
-			return parent, true
-		}
-		if found, ok := findParent(item.Children, id, item.ID); ok {
-			return found, true
-		}
-	}
-	return "", false
-}
-
-func insertAfterID(items []Item, id string, created Item) ([]Item, bool) {
-	for index, item := range items {
-		if item.ID == id {
-			next := make([]Item, 0, len(items)+1)
-			next = append(next, items[:index+1]...)
-			next = append(next, created)
-			next = append(next, items[index+1:]...)
-			return next, true
-		}
-		kids, ok := insertAfterID(item.Children, id, created)
-		if !ok {
-			continue
-		}
-		item.Children = kids
-		next := append([]Item{}, items...)
-		next[index] = item
-		return next, true
-	}
-	return items, false
-}
-
-func renameID(items []Item, id, label string) ([]Item, bool) {
-	for index, item := range items {
-		if item.ID == id {
-			item.Label = label
-			next := append([]Item{}, items...)
-			next[index] = item
-			return next, true
-		}
-		kids, ok := renameID(item.Children, id, label)
-		if !ok {
-			continue
-		}
-		item.Children = kids
-		next := append([]Item{}, items...)
-		next[index] = item
-		return next, true
-	}
-	return items, false
-}
-
-func deleteID(items []Item, id string) ([]Item, bool) {
-	next := make([]Item, 0, len(items))
-	found := false
-	for _, item := range items {
-		if item.ID == id {
-			found = true
-			continue
-		}
-		kids, ok := deleteID(item.Children, id)
-		if ok {
-			item.Children = kids
-			found = true
-		}
-		next = append(next, item)
-	}
-	if !found {
-		return items, false
-	}
-	return next, true
 }

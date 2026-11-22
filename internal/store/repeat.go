@@ -1,6 +1,8 @@
 package store
 
 import (
+	"github.com/ryangerardwilson/crusade/internal/sqlite"
+
 	"fmt"
 	"sort"
 	"strings"
@@ -9,56 +11,29 @@ import (
 	"github.com/ryangerardwilson/crusade/internal/model"
 )
 
-// Null until_on is a series with no end. Null url is a series with no meeting
-// link.
-const repeatModel = "model repeat\n" +
-	"  id integer primary key\n" +
-	"  title text not null\n" +
-	"  start_at text not null\n" +
-	"  end_at text not null\n" +
-	"  freq text not null\n" +
-	"  until_on text\n" +
-	"  url text\n"
-
-// In repeat_change, title, start_at, and end_at are null only on a skipped day.
-// Null url on a kept day means that day uses the series url.
-//
-// Architecture exception (gates §1.5, §1.7, §1.16): repeat_id has no foreign
-// key, and skipped decides whether the other columns mean anything. Every
-// write goes through changeSQL, changeUpdateSQL, and the override statements
-// below, which clear the columns of a skipped day, and DeleteRepeat removes
-// a series and its days in one transaction. Remove once a migration rebuilds
-// the table with a foreign key and separate skip and override rows.
-const repeatChangeModel = "model repeat_change\n" +
-	"  id integer primary key\n" +
-	"  repeat_id integer not null\n" +
-	"  day text not null\n" +
-	"  skipped integer not null\n" +
-	"  title text\n" +
-	"  start_at text\n" +
-	"  end_at text\n" +
-	"  url text\n"
-
 const repeatHorizonDays = 366
 
-// RepeatRecord is one recurring block. It is not a do task.
+// RepeatRecord is one stored series with its skipped and overridden days.
 type RepeatRecord struct {
-	ID     int
-	Repeat model.Repeat
+	ID int
+	model.Series
 }
 
-// RepeatChange skips one day or replaces that day's title, times, and meeting url.
-// HasURL is false when that day still uses the series url.
-type RepeatChange struct {
-	ID       int
+// FormTarget is what the calendar form saves: a new entry on Day, the block
+// BlockID, or the day Day of the series RepeatID.
+type FormTarget struct {
+	BlockID  int
 	RepeatID int
 	Day      time.Time
-	Skipped  bool
+}
+
+// Saved is what a calendar form save wrote.
+type Saved struct {
+	BlockID  int
+	RepeatID int
 	Title    string
-	Start    time.Time
-	End      time.Time
-	URL      string
-	HasURL   bool
+	Freq     string
+	Change   model.CalChange
 }
 
 type repeatRow struct {
@@ -71,11 +46,9 @@ type repeatRow struct {
 	URL     *string `json:"url"`
 }
 
-type repeatChangeRow struct {
-	ID       int     `json:"id"`
+type overrideRow struct {
 	RepeatID int     `json:"repeat_id"`
 	Day      string  `json:"day"`
-	Skipped  int     `json:"skipped"`
 	Title    *string `json:"title"`
 	StartAt  *string `json:"start_at"`
 	EndAt    *string `json:"end_at"`
@@ -90,37 +63,27 @@ type span struct {
 	repeatID int
 }
 
+// LoadRepeats reads every series with its skipped and overridden days.
 func LoadRepeats(dbPath string) ([]RepeatRecord, error) {
 	if err := ensure(dbPath); err != nil {
 		return nil, err
 	}
 	var rows []repeatRow
-	if err := queryJSON(dbPath, "SELECT id, title, start_at, end_at, freq, until_on, url FROM repeat", &rows); err != nil {
+	if err := sqlite.Query(dbPath, "SELECT id, title, start_at, end_at, freq, until_on, url FROM repeat", &rows); err != nil {
 		return nil, fmt.Errorf("failed to read repeats from %s: %w", dbPath, err)
 	}
 	repeats := make([]RepeatRecord, 0, len(rows))
-	seen := make(map[int]bool, len(rows))
+	index := map[int]int{}
 	for _, row := range rows {
-		if row.ID <= 0 {
-			return nil, fmt.Errorf("failed to read repeats from %s: repeat has invalid id", dbPath)
-		}
-		if seen[row.ID] {
-			return nil, fmt.Errorf("failed to read repeats from %s: duplicate repeat id %d", dbPath, row.ID)
-		}
-		seen[row.ID] = true
-		repeat, err := model.NewRepeat(row.Title, row.StartAt, row.EndAt, row.Freq)
+		repeat, err := repeatFromRow(row)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read repeats from %s: repeat id %d: %w", dbPath, row.ID, err)
 		}
-		if row.UntilOn != nil && strings.TrimSpace(*row.UntilOn) != "" {
-			until, err := parseDay(*row.UntilOn)
-			if err != nil {
-				return nil, fmt.Errorf("failed to read repeats from %s: repeat id %d: %w", dbPath, row.ID, err)
-			}
-			repeat.Until = until
-		}
-		repeat.URL = plainURL(row.URL)
-		repeats = append(repeats, RepeatRecord{ID: row.ID, Repeat: repeat})
+		index[row.ID] = len(repeats)
+		repeats = append(repeats, RepeatRecord{ID: row.ID, Series: model.Series{Repeat: repeat}})
+	}
+	if err := loadSeriesDays(dbPath, repeats, index); err != nil {
+		return nil, fmt.Errorf("failed to read repeats from %s: %w", dbPath, err)
 	}
 	sort.SliceStable(repeats, func(i, j int) bool {
 		if repeats[i].Repeat.Start.Equal(repeats[j].Repeat.Start) {
@@ -131,44 +94,73 @@ func LoadRepeats(dbPath string) ([]RepeatRecord, error) {
 	return repeats, nil
 }
 
-func LoadRepeatChanges(dbPath string) ([]RepeatChange, error) {
-	if err := ensure(dbPath); err != nil {
-		return nil, err
+func repeatFromRow(row repeatRow) (model.Repeat, error) {
+	repeat, err := model.NewRepeat(row.Title, row.StartAt, row.EndAt, row.Freq)
+	if err != nil {
+		return model.Repeat{}, err
 	}
-	var rows []repeatChangeRow
-	if err := queryJSON(dbPath, "SELECT id, repeat_id, day, skipped, title, start_at, end_at, url FROM repeat_change", &rows); err != nil {
-		return nil, fmt.Errorf("failed to read repeat changes from %s: %w", dbPath, err)
-	}
-	changes := make([]RepeatChange, 0, len(rows))
-	for _, row := range rows {
-		day, err := parseDay(row.Day)
+	if row.UntilOn != nil {
+		until, err := parseDay(*row.UntilOn)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read repeat changes from %s: change id %d: %w", dbPath, row.ID, err)
+			return model.Repeat{}, err
 		}
-		change := RepeatChange{ID: row.ID, RepeatID: row.RepeatID, Day: day, Skipped: row.Skipped != 0}
-		if row.URL != nil {
-			change.URL = strings.TrimSpace(*row.URL)
-			change.HasURL = true
-		}
-		if change.Skipped {
-			changes = append(changes, change)
-			continue
-		}
-		if row.Title == nil || row.StartAt == nil || row.EndAt == nil {
-			return nil, fmt.Errorf("failed to read repeat changes from %s: change id %d is incomplete", dbPath, row.ID)
-		}
-		block, err := model.NewBlock(*row.Title, *row.StartAt, *row.EndAt)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read repeat changes from %s: change id %d: %w", dbPath, row.ID, err)
-		}
-		change.Title = block.Title
-		change.Start = block.Start
-		change.End = block.End
-		changes = append(changes, change)
+		repeat.Until = until
 	}
-	return changes, nil
+	repeat.URL = plainURL(row.URL)
+	return repeat, nil
 }
 
+func loadSeriesDays(dbPath string, repeats []RepeatRecord, index map[int]int) error {
+	var skips []struct {
+		RepeatID int    `json:"repeat_id"`
+		Day      string `json:"day"`
+	}
+	if err := sqlite.Query(dbPath, "SELECT repeat_id, day FROM repeat_skip", &skips); err != nil {
+		return err
+	}
+	for _, skip := range skips {
+		day, err := parseDay(skip.Day)
+		if err != nil {
+			return err
+		}
+		at := index[skip.RepeatID]
+		repeats[at].Skips = append(repeats[at].Skips, day)
+	}
+	var overrides []overrideRow
+	if err := sqlite.Query(dbPath, "SELECT repeat_id, day, title, start_at, end_at, url FROM repeat_override", &overrides); err != nil {
+		return err
+	}
+	for _, row := range overrides {
+		override, err := overrideFromRow(row)
+		if err != nil {
+			return err
+		}
+		at := index[row.RepeatID]
+		repeats[at].Overrides = append(repeats[at].Overrides, override)
+	}
+	return nil
+}
+
+func overrideFromRow(row overrideRow) (model.RepeatOverride, error) {
+	day, err := parseDay(row.Day)
+	if err != nil {
+		return model.RepeatOverride{}, err
+	}
+	override := model.RepeatOverride{Day: day, URL: plainURL(row.URL)}
+	if row.Title != nil {
+		override.Title = *row.Title
+	}
+	if row.StartAt != nil && row.EndAt != nil {
+		block, err := model.NewBlock("day", *row.StartAt, *row.EndAt)
+		if err != nil {
+			return model.RepeatOverride{}, err
+		}
+		override.Start, override.End = block.Start, block.End
+	}
+	return override, nil
+}
+
+// AddRepeat stores a new series on the hour.
 func AddRepeat(dbPath string, repeat model.Repeat) (int, error) {
 	repeat, err := normalizeRepeat(repeat)
 	if err != nil {
@@ -180,169 +172,20 @@ func AddRepeat(dbPath string, repeat model.Repeat) (int, error) {
 	if err := spanConflicts(dbPath, probeRepeat(repeat), nil); err != nil {
 		return 0, err
 	}
-	return insertRepeat(dbPath, repeat)
-}
-
-func UpdateRepeat(dbPath string, id int, repeat model.Repeat) error {
-	return saveRepeat(dbPath, id, repeat, false)
-}
-
-// UpdateRepeatDays saves the series and gives its renamed or rescheduled days
-// the series title, and the series url when pinURLs is set, in one transaction.
-func UpdateRepeatDays(dbPath string, id int, repeat model.Repeat, pinURLs bool) error {
-	normalized, err := normalizeRepeat(repeat)
-	if err != nil {
-		return err
+	var rows []struct {
+		ID int `json:"id"`
 	}
-	then := []string{renameOverridesSQL(id, normalized.Title)}
-	if pinURLs {
-		then = append(then, overrideURLsSQL(id, normalized.URL))
-	}
-	return saveRepeat(dbPath, id, repeat, false, then...)
-}
-
-// ReplaceRepeat saves the series clock and drops renamed or rescheduled days.
-// Skipped days stay skipped.
-func ReplaceRepeat(dbPath string, id int, repeat model.Repeat) error {
-	return saveRepeat(dbPath, id, repeat, true, dropOverridesSQL(id))
-}
-
-// saveRepeat validates the series and writes it with the statements in then as
-// one transaction.
-func saveRepeat(dbPath string, id int, repeat model.Repeat, dropOverrides bool, then ...string) error {
-	repeat, err := normalizeRepeat(repeat)
-	if err != nil {
-		return err
-	}
-	if err := rejectMovedOffHour(dbPath, id, repeat); err != nil {
-		return err
-	}
-	changes, err := LoadRepeatChanges(dbPath)
-	if err != nil {
-		return err
-	}
-	if err := spanConflicts(dbPath, occurrenceProbes(repeat, changes, id, dropOverrides), func(existing span) bool {
-		return existing.repeatID == id
-	}); err != nil {
-		return err
-	}
-	if err := ensure(dbPath); err != nil {
-		return err
-	}
-	ok, err := repeatExists(dbPath, id)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("ID %d not found", id)
-	}
-	return execSQL(dbPath, inTx(append([]string{repeatUpdateSQL(id, repeat)}, then...)...))
-}
-
-func DeleteRepeat(dbPath string, id int) error {
-	if err := ensure(dbPath); err != nil {
-		return err
-	}
-	changed, err := rowsChanged(dbPath, inTx(
-		fmt.Sprintf("DELETE FROM repeat_change WHERE repeat_id = %d;\n", id),
-		fmt.Sprintf("DELETE FROM repeat WHERE id = %d;\n", id),
-	))
-	if err != nil {
-		return err
-	}
-	if !changed {
-		return fmt.Errorf("ID %d not found", id)
-	}
-	return nil
-}
-
-func SetRepeatUntil(dbPath string, id int, until time.Time) error {
-	repeats, err := LoadRepeats(dbPath)
-	if err != nil {
-		return err
-	}
-	current, ok := findRepeat(repeats, id)
-	if !ok {
-		return fmt.Errorf("ID %d not found", id)
-	}
-	current.Repeat.Until = dateOnlyLocal(until)
-	return saveRepeat(dbPath, id, current.Repeat, false, changesFromSQL(id, dateOnlyLocal(until).AddDate(0, 0, 1)))
-}
-
-// ContinueRepeat keeps the days before day and starts next on day.
-// When day is the first day, next replaces the series.
-// clearOverrides drops renamed or rescheduled days when the whole series is
-// replaced; otherwise those days take the new title. applyURL makes next.URL the
-// meeting link of every occurrence, earlier days included. Each case is one
-// transaction.
-func ContinueRepeat(dbPath string, id int, day time.Time, next model.Repeat, clearOverrides, applyURL bool) (int, error) {
-	repeats, err := LoadRepeats(dbPath)
-	if err != nil {
+	if err := sqlite.Query(dbPath, "INSERT INTO repeat(title, start_at, end_at, freq, until_on, url) VALUES ("+repeatValuesSQL(repeat)+") RETURNING id;\n", &rows); err != nil {
 		return 0, err
 	}
-	current, ok := findRepeat(repeats, id)
-	if !ok {
-		return 0, fmt.Errorf("ID %d not found", id)
+	if len(rows) == 0 {
+		return 0, fmt.Errorf("%s: sqlite returned no id", dbPath)
 	}
-	day = dateOnlyLocal(day)
-	next, err = normalizeRepeat(next)
-	if err != nil {
-		return 0, err
-	}
-	if sameDateLocal(current.Repeat.Start, day) {
-		next.Until = current.Repeat.Until
-		var err error
-		if clearOverrides {
-			err = ReplaceRepeat(dbPath, id, next)
-		} else {
-			err = UpdateRepeatDays(dbPath, id, next, applyURL)
-		}
-		if err != nil {
-			return 0, err
-		}
-		return id, nil
-	}
-	if !current.Repeat.Until.IsZero() && !dateOnlyLocal(current.Repeat.Until).Before(day) {
-		next.Until = current.Repeat.Until
-	}
-	if err := spanConflicts(dbPath, probeRepeat(next), func(existing span) bool {
-		return existing.repeatID == id && !existing.start.Before(day)
-	}); err != nil {
-		return 0, err
-	}
-	if repeatClockChanged(current.Repeat, next) {
-		if err := next.OnTheHour(); err != nil {
-			return 0, err
-		}
-	}
-	return splitRepeat(dbPath, current, day, next, applyURL)
+	published(dbPath)
+	return rows[0].ID, nil
 }
 
-// splitRepeat ends the current series the day before day and starts next on
-// day in one transaction.
-func splitRepeat(dbPath string, current RepeatRecord, day time.Time, next model.Repeat, applyURL bool) (int, error) {
-	earlier := current.Repeat
-	earlier.Until = day.AddDate(0, 0, -1)
-	var statements []string
-	if applyURL {
-		earlier.URL = next.URL
-		statements = append(statements, clearOverrideURLsSQL(current.ID))
-	}
-	earlier, err := normalizeRepeat(earlier)
-	if err != nil {
-		return 0, err
-	}
-	id, err := nextRepeatID(dbPath)
-	if err != nil {
-		return 0, err
-	}
-	statements = append(statements, repeatUpdateSQL(current.ID, earlier), changesFromSQL(current.ID, day), repeatInsertSQL(id, next))
-	if err := execSQL(dbPath, inTx(statements...)); err != nil {
-		return 0, err
-	}
-	return id, nil
-}
-
+// MakeRepeatFromBlock turns the block into a series in one transaction.
 func MakeRepeatFromBlock(dbPath string, blockID int, repeat model.Repeat) (int, error) {
 	repeat, err := normalizeRepeat(repeat)
 	if err != nil {
@@ -356,138 +199,273 @@ func MakeRepeatFromBlock(dbPath string, blockID int, repeat model.Repeat) (int, 
 	}); err != nil {
 		return 0, err
 	}
-	if err := ensure(dbPath); err != nil {
-		return 0, err
+	var rows []struct {
+		ID int `json:"id"`
 	}
-	id, err := nextRepeatID(dbPath)
-	if err != nil {
-		return 0, err
-	}
-	changed, err := rowsChanged(dbPath, inTx(
-		"INSERT INTO repeat(id, title, start_at, end_at, freq, until_on, url) SELECT "+repeatValuesSQL(id, repeat)+fmt.Sprintf(" WHERE EXISTS (SELECT 1 FROM block WHERE id = %d);\n", blockID),
+	sql := inTx(
+		"INSERT INTO repeat(title, start_at, end_at, freq, until_on, url) SELECT "+repeatValuesSQL(repeat)+fmt.Sprintf(" WHERE EXISTS (SELECT 1 FROM block WHERE id = %d) RETURNING id;\n", blockID),
 		fmt.Sprintf("DELETE FROM block WHERE id = %d;\n", blockID),
-	))
-	if err != nil {
+	)
+	if err := sqlite.Query(dbPath, sql, &rows); err != nil {
 		return 0, err
 	}
-	if !changed {
+	if len(rows) == 0 {
 		return 0, fmt.Errorf("ID %d not found", blockID)
 	}
-	return id, nil
+	published(dbPath)
+	return rows[0].ID, nil
 }
 
-func SkipRepeatDay(dbPath string, id int, day time.Time) error {
-	if _, ok, err := requireRepeat(dbPath, id); err != nil || !ok {
-		if err != nil {
-			return err
-		}
-		return fmt.Errorf("ID %d not found", id)
+// DeleteRepeat removes the series; its skipped and overridden days go with it.
+func DeleteRepeat(dbPath string, id int) error {
+	if err := ensure(dbPath); err != nil {
+		return err
 	}
-	return saveChange(dbPath, RepeatChange{RepeatID: id, Day: dateOnlyLocal(day), Skipped: true})
+	return changeOne(dbPath, fmt.Sprintf("DELETE FROM repeat WHERE id = %d;\n", id), id)
 }
 
-func OverrideRepeatDay(dbPath string, id int, day time.Time, title string, start, end time.Time, url string) error {
-	return overrideRepeatDay(dbPath, id, day, title, start, end, url, false)
-}
-
-// OverrideRepeatDayAndURL saves this day and makes url the meeting link of
-// every occurrence in one transaction.
-func OverrideRepeatDayAndURL(dbPath string, id int, day time.Time, title string, start, end time.Time, url string) error {
-	return overrideRepeatDay(dbPath, id, day, title, start, end, url, true)
-}
-
-func overrideRepeatDay(dbPath string, id int, day time.Time, title string, start, end time.Time, url string, applyURL bool) error {
-	current, ok, err := requireRepeat(dbPath, id)
+// DeleteOccurrence removes day of the series id: that day, that day and the
+// days after it, or every day, as scope says.
+func DeleteOccurrence(dbPath string, id int, day time.Time, scope model.Scope) error {
+	current, err := requireRepeat(dbPath, id)
 	if err != nil {
 		return err
 	}
-	if !ok {
-		return fmt.Errorf("ID %d not found", id)
-	}
-	block, err := model.NewBlock(title, start.Format(model.DateTimeFormat), end.Format(model.DateTimeFormat))
-	if err != nil {
-		return err
-	}
-	if err := rejectOccurrenceClock(dbPath, id, day, block); err != nil {
-		return err
-	}
-	if !sameDateLocal(block.Start, day) {
-		return fmt.Errorf("a block stays on one day")
-	}
-	probe := span{start: block.Start, end: block.End}
-	if err := spanConflicts(dbPath, []span{probe}, func(existing span) bool {
-		return existing.repeatID == id && sameDateLocal(existing.start, day)
-	}); err != nil {
-		return err
-	}
-	var statements []string
-	if applyURL {
+	plan := current.DeleteDay(day, scope)
+	switch {
+	case plan.Whole:
+		return DeleteRepeat(dbPath, id)
+	case plan.Skip:
+		return execSQL(dbPath, inTx(skipSQL(id, plan.Day)))
+	default:
 		series := current.Repeat
-		series.URL = strings.TrimSpace(url)
+		series.Until = plan.Until
 		if series, err = normalizeRepeat(series); err != nil {
 			return err
 		}
-		statements = append(statements, repeatUpdateSQL(id, series), clearOverrideURLsSQL(id))
+		return execSQL(dbPath, inTx(repeatUpdateSQL(id, series), daysFromSQL(id, plan.Day)))
 	}
-	change, err := changeSQL(dbPath, RepeatChange{
-		RepeatID: id,
-		Day:      dateOnlyLocal(day),
-		Title:    block.Title,
-		Start:    block.Start,
-		End:      block.End,
-		URL:      strings.TrimSpace(url),
-		HasURL:   true,
-	})
-	if err != nil {
-		return err
-	}
-	return execSQL(dbPath, inTx(append(statements, change)...))
 }
 
-// ApplyRepeatURL stores the meeting url on the series and drops per-day url
-// pins, so every occurrence uses that link.
-func ApplyRepeatURL(dbPath string, id int, url string) error {
-	repeats, err := LoadRepeats(dbPath)
-	if err != nil {
-		return err
+// SaveForm stores one calendar form save. It decides from what changed
+// whether a new entry is a block or a series, whether a block stays a block,
+// and for a series day which days the save reaches. Each case is one
+// transaction.
+func SaveForm(dbPath string, target FormTarget, form model.CalForm) (Saved, error) {
+	switch {
+	case target.RepeatID != 0:
+		return saveRepeatForm(dbPath, target, form)
+	case target.BlockID != 0:
+		return saveBlockForm(dbPath, target.BlockID, form)
+	default:
+		return addFormEntry(dbPath, target.Day, form)
 	}
-	current, ok := findRepeat(repeats, id)
-	if !ok {
-		return fmt.Errorf("ID %d not found", id)
-	}
-	current.Repeat.URL = strings.TrimSpace(url)
-	return saveRepeat(dbPath, id, current.Repeat, false, clearOverrideURLsSQL(id))
 }
 
-// inTx wraps statements in one transaction. sqliteRun bails at the first
-// failed statement, so nothing before it commits.
+func addFormEntry(dbPath string, day time.Time, form model.CalForm) (Saved, error) {
+	block, repeat, isRepeat, err := model.NewCalEntry(day, form)
+	if err != nil {
+		return Saved{}, err
+	}
+	if isRepeat {
+		id, err := AddRepeat(dbPath, repeat)
+		return Saved{RepeatID: id, Title: repeat.Title, Freq: repeat.Freq, Change: model.ChangeRepeats}, err
+	}
+	id, err := AddBlock(dbPath, block)
+	return Saved{BlockID: id, Title: block.Title, Change: model.ChangeBlocked}, err
+}
+
+func saveBlockForm(dbPath string, id int, form model.CalForm) (Saved, error) {
+	current, err := requireBlock(dbPath, id)
+	if err != nil {
+		return Saved{}, err
+	}
+	edit, err := model.EditBlock(current, form)
+	if err != nil {
+		return Saved{}, err
+	}
+	if edit.MakeRepeat {
+		repeatID, err := MakeRepeatFromBlock(dbPath, id, edit.Repeat)
+		return Saved{RepeatID: repeatID, Title: edit.Repeat.Title, Freq: edit.Repeat.Freq, Change: edit.Change}, err
+	}
+	err = updateBlock(dbPath, id, edit.Block)
+	return Saved{BlockID: id, Title: edit.Block.Title, Change: edit.Change}, err
+}
+
+func saveRepeatForm(dbPath string, target FormTarget, form model.CalForm) (Saved, error) {
+	current, err := requireRepeat(dbPath, target.RepeatID)
+	if err != nil {
+		return Saved{}, err
+	}
+	edit, err := current.EditRepeat(target.Day, form)
+	if err != nil {
+		return Saved{}, err
+	}
+	saved := Saved{RepeatID: current.ID, Title: edit.Next.Title, Freq: edit.Next.Freq, Change: edit.Change}
+	next, err := normalizeRepeat(edit.Next)
+	if err != nil {
+		return Saved{}, err
+	}
+	edit.Next = next
+	switch edit.Action {
+	case model.ActSeriesURL, model.ActUpdateAll:
+		err = execSQL(dbPath, inTx(seriesSQL(current.ID, edit, time.Time{})...))
+	case model.ActOverride:
+		err = saveOverride(dbPath, current, edit)
+	case model.ActReplaceAll:
+		err = replaceSeries(dbPath, current, edit)
+	default:
+		saved.RepeatID, err = continueSeries(dbPath, current, edit)
+	}
+	return saved, err
+}
+
+// seriesSQL writes the series and, from day on (every day when day is zero),
+// lets the overridden days take its new title or url.
+func seriesSQL(id int, edit model.RepeatEdit, from time.Time) []string {
+	statements := []string{repeatUpdateSQL(id, edit.Next)}
+	if edit.RenameDays {
+		statements = append(statements, clearOverrideSQL(id, "title", from))
+	}
+	if edit.ApplyURL {
+		statements = append(statements, clearOverrideSQL(id, "url", time.Time{}))
+	}
+	return statements
+}
+
+func saveOverride(dbPath string, current RepeatRecord, edit model.RepeatEdit) error {
+	day := edit.Day
+	if edit.Override.HasClock() {
+		probe := span{start: edit.Override.Start, end: edit.Override.End}
+		if err := spanConflicts(dbPath, []span{probe}, func(existing span) bool {
+			return existing.repeatID == current.ID && sameDateLocal(existing.start, day)
+		}); err != nil {
+			return err
+		}
+	}
+	statements := []string{}
+	if edit.ApplyURL {
+		statements = append(statements, repeatUpdateSQL(current.ID, edit.Next), clearOverrideSQL(current.ID, "url", time.Time{}))
+	}
+	statements = append(statements, fmt.Sprintf("DELETE FROM repeat_override WHERE repeat_id = %d AND day = %s;\n", current.ID, daySQL(day)))
+	if edit.KeepOverride {
+		statements = append(statements, overrideInsertSQL(current.ID, edit.Override))
+	}
+	return execSQL(dbPath, inTx(statements...))
+}
+
+// replaceSeries moves every day to the new clock or frequency and drops the
+// overridden days. Skipped days stay skipped.
+func replaceSeries(dbPath string, current RepeatRecord, edit model.RepeatEdit) error {
+	probes := occurrenceProbes(model.Series{Repeat: edit.Next, Skips: current.Skips})
+	if err := spanConflicts(dbPath, probes, func(existing span) bool {
+		return existing.repeatID == current.ID
+	}); err != nil {
+		return err
+	}
+	return execSQL(dbPath, inTx(
+		repeatUpdateSQL(current.ID, edit.Next),
+		fmt.Sprintf("DELETE FROM repeat_override WHERE repeat_id = %d;\n", current.ID),
+	))
+}
+
+// continueSeries keeps the days before edit.Day and starts edit.Next on it.
+// From the first day it is the whole series.
+func continueSeries(dbPath string, current RepeatRecord, edit model.RepeatEdit) (int, error) {
+	day := edit.Day
+	next := edit.Next
+	if sameDateLocal(current.Repeat.Start, day) {
+		next.Until = current.Repeat.Until
+		edit.Next = next
+		if edit.ClearDays {
+			return current.ID, replaceSeries(dbPath, current, edit)
+		}
+		return current.ID, execSQL(dbPath, inTx(seriesSQL(current.ID, edit, time.Time{})...))
+	}
+	if !current.Repeat.Until.IsZero() && !dateOnlyLocal(current.Repeat.Until).Before(day) {
+		next.Until = current.Repeat.Until
+	}
+	if err := spanConflicts(dbPath, probeRepeat(next), func(existing span) bool {
+		return existing.repeatID == current.ID && !existing.start.Before(day)
+	}); err != nil {
+		return 0, err
+	}
+	earlier := current.Repeat
+	earlier.Until = day.AddDate(0, 0, -1)
+	var statements []string
+	if edit.ApplyURL {
+		earlier.URL = next.URL
+		statements = append(statements, clearOverrideSQL(current.ID, "url", time.Time{}))
+	}
+	earlier, err := normalizeRepeat(earlier)
+	if err != nil {
+		return 0, err
+	}
+	statements = append(statements, repeatUpdateSQL(current.ID, earlier), daysFromSQL(current.ID, day),
+		"INSERT INTO repeat(title, start_at, end_at, freq, until_on, url) VALUES ("+repeatValuesSQL(next)+") RETURNING id;\n")
+	var rows []struct {
+		ID int `json:"id"`
+	}
+	if err := sqlite.Query(dbPath, inTx(statements...), &rows); err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, fmt.Errorf("%s: sqlite returned no id", dbPath)
+	}
+	published(dbPath)
+	return rows[0].ID, nil
+}
+
+// inTx wraps statements in one transaction. sqlite bails at the first failed
+// statement, so nothing before it commits.
 func inTx(statements ...string) string {
 	return "BEGIN IMMEDIATE;\n" + strings.Join(statements, "") + "COMMIT;\n"
 }
 
-func dropOverridesSQL(id int) string {
-	return fmt.Sprintf("DELETE FROM repeat_change WHERE repeat_id = %d AND skipped = 0;\n", id)
+func skipSQL(id int, day time.Time) string {
+	return fmt.Sprintf("DELETE FROM repeat_override WHERE repeat_id = %[1]d AND day = %[2]s;\n"+
+		"INSERT OR IGNORE INTO repeat_skip(repeat_id, day) VALUES (%[1]d, %[2]s);\n", id, daySQL(day))
 }
 
-// Architecture exception (gates §1.15, §2.13, §2.14): an overridden day stores
-// its own copy of the series title and url, and these two statements keep the
-// copies in step when the whole series is edited. They run only inside the
-// series write's transaction. Remove once a null override title and url mean
-// "use the series value".
-func renameOverridesSQL(id int, title string) string {
-	return fmt.Sprintf("UPDATE repeat_change SET title = %s WHERE repeat_id = %d AND skipped = 0;\n", sqlString(title), id)
+// clearOverrideSQL lets the overridden days of id from day on (every day when
+// from is zero) take the series value of column, title or url. A day left
+// with nothing of its own is no longer overridden.
+func clearOverrideSQL(id int, column string, from time.Time) string {
+	others := "start_at IS NULL AND url IS NULL"
+	if column == "url" {
+		others = "start_at IS NULL AND title IS NULL"
+	}
+	where := fmt.Sprintf("repeat_id = %d", id)
+	if !from.IsZero() {
+		where += " AND day >= " + daySQL(from)
+	}
+	return fmt.Sprintf("DELETE FROM repeat_override WHERE %s AND %s;\nUPDATE repeat_override SET %s = NULL WHERE %s;\n", where, others, column, where)
 }
 
-func overrideURLsSQL(id int, url string) string {
-	return fmt.Sprintf("UPDATE repeat_change SET url = %s WHERE repeat_id = %d AND skipped = 0;\n", sqlString(strings.TrimSpace(url)), id)
+func daysFromSQL(id int, day time.Time) string {
+	return fmt.Sprintf("DELETE FROM repeat_skip WHERE repeat_id = %[1]d AND day >= %[2]s;\n"+
+		"DELETE FROM repeat_override WHERE repeat_id = %[1]d AND day >= %[2]s;\n", id, daySQL(day))
 }
 
-func clearOverrideURLsSQL(id int) string {
-	return fmt.Sprintf("UPDATE repeat_change SET url = NULL WHERE repeat_id = %d AND skipped = 0;\n", id)
+func overrideInsertSQL(id int, override model.RepeatOverride) string {
+	start, end := "NULL", "NULL"
+	if override.HasClock() {
+		start = sqlite.Quote(override.Start.Format(model.DateTimeFormat))
+		end = sqlite.Quote(override.End.Format(model.DateTimeFormat))
+	}
+	return fmt.Sprintf("INSERT INTO repeat_override(repeat_id, day, title, start_at, end_at, url) VALUES (%d, %s, %s, %s, %s, %s);\n",
+		id, daySQL(override.Day), nullableSQL(override.Title), start, end, storedURL(override.URL))
 }
 
-func changesFromSQL(id int, day time.Time) string {
-	return fmt.Sprintf("DELETE FROM repeat_change WHERE repeat_id = %d AND day >= %s;\n", id, sqlString(dateOnlyLocal(day).Format(time.DateOnly)))
+func nullableSQL(value string) string {
+	if value == "" {
+		return "NULL"
+	}
+	return sqlite.Quote(value)
+}
+
+func daySQL(day time.Time) string {
+	return sqlite.Quote(dateOnlyLocal(day).Format(time.DateOnly))
 }
 
 func normalizeRepeat(repeat model.Repeat) (model.Repeat, error) {
@@ -503,124 +481,17 @@ func normalizeRepeat(repeat model.Repeat) (model.Repeat, error) {
 	return next, nil
 }
 
-func rejectMovedOffHour(dbPath string, id int, repeat model.Repeat) error {
-	current, ok, err := requireRepeat(dbPath, id)
-	if err != nil || !ok || !repeatClockChanged(current.Repeat, repeat) {
-		return err
-	}
-	return repeat.OnTheHour()
-}
-
-func rejectOccurrenceClock(dbPath string, id int, day time.Time, block model.Block) error {
-	current, ok, err := requireRepeat(dbPath, id)
-	if err != nil || !ok {
-		if err != nil {
-			return err
-		}
-		return fmt.Errorf("ID %d not found", id)
-	}
-	start, end := current.Repeat.SpanOn(day)
-	changes, err := LoadRepeatChanges(dbPath)
-	if err != nil {
-		return err
-	}
-	if change, found := changeFor(changes, id, day); found && !change.Skipped {
-		start, end = change.Start, change.End
-	}
-	if sameWallClock(block.Start, start) && sameWallClock(block.End, end) {
-		return nil
-	}
-	return block.OnTheHour()
-}
-
-func repeatClockChanged(current, next model.Repeat) bool {
-	return !sameWallClock(current.Start, next.Start) || !sameWallClock(current.End, next.End)
-}
-
-func sameWallClock(a, b time.Time) bool {
-	return a.Hour() == b.Hour() && a.Minute() == b.Minute() && a.Second() == b.Second()
-}
-
-func insertRepeat(dbPath string, repeat model.Repeat) (int, error) {
-	if err := ensure(dbPath); err != nil {
-		return 0, err
-	}
-	id, err := nextRepeatID(dbPath)
-	if err != nil {
-		return 0, err
-	}
-	if err := execSQL(dbPath, repeatInsertSQL(id, repeat)); err != nil {
-		return 0, err
-	}
-	return id, nil
-}
-
-func saveChange(dbPath string, change RepeatChange) error {
-	sql, err := changeSQL(dbPath, change)
-	if err != nil {
-		return err
-	}
-	return execSQL(dbPath, sql)
-}
-
-// changeSQL is the statement that saves change: an update when that day
-// already has a change, otherwise an insert.
-func changeSQL(dbPath string, change RepeatChange) (string, error) {
-	if err := ensure(dbPath); err != nil {
-		return "", err
-	}
-	changes, err := LoadRepeatChanges(dbPath)
-	if err != nil {
-		return "", err
-	}
-	change.Day = dateOnlyLocal(change.Day)
-	if found, ok := changeFor(changes, change.RepeatID, change.Day); ok {
-		return changeUpdateSQL(found.ID, change), nil
-	}
-	id, err := nextChangeID(dbPath)
-	if err != nil {
-		return "", err
-	}
-	return changeInsertSQL(id, change), nil
-}
-
-func requireRepeat(dbPath string, id int) (RepeatRecord, bool, error) {
+func requireRepeat(dbPath string, id int) (RepeatRecord, error) {
 	repeats, err := LoadRepeats(dbPath)
 	if err != nil {
-		return RepeatRecord{}, false, err
+		return RepeatRecord{}, err
 	}
-	found, ok := findRepeat(repeats, id)
-	return found, ok, nil
-}
-
-func findRepeat(repeats []RepeatRecord, id int) (RepeatRecord, bool) {
 	for _, repeat := range repeats {
 		if repeat.ID == id {
-			return repeat, true
+			return repeat, nil
 		}
 	}
-	return RepeatRecord{}, false
-}
-
-func changeFor(changes []RepeatChange, id int, day time.Time) (RepeatChange, bool) {
-	for _, change := range changes {
-		if change.RepeatID == id && sameDateLocal(change.Day, day) {
-			return change, true
-		}
-	}
-	return RepeatChange{}, false
-}
-
-func repeatExists(dbPath string, id int) (bool, error) {
-	_, ok, err := requireRepeat(dbPath, id)
-	return ok, err
-}
-
-func blockConflicts(dbPath string, id int, block model.Block) error {
-	probe := span{start: block.Start, end: block.End}
-	return spanConflicts(dbPath, []span{probe}, func(existing span) bool {
-		return id != 0 && existing.blockID == id
-	})
+	return RepeatRecord{}, fmt.Errorf("ID %d not found", id)
 }
 
 func spanConflicts(dbPath string, probes []span, skip func(span) bool) error {
@@ -664,10 +535,6 @@ func collectSpans(dbPath string, from, to time.Time) ([]span, error) {
 	if err != nil {
 		return nil, err
 	}
-	changes, err := LoadRepeatChanges(dbPath)
-	if err != nil {
-		return nil, err
-	}
 	from = dateOnlyLocal(from)
 	to = dateOnlyLocal(to)
 	spans := make([]span, 0)
@@ -679,71 +546,29 @@ func collectSpans(dbPath string, from, to time.Time) ([]span, error) {
 		spans = append(spans, span{start: block.Block.Start, end: block.Block.End, title: block.Block.Title, blockID: block.ID})
 	}
 	for _, repeat := range repeats {
-		spans = append(spans, expandRepeat(repeat, changes, from, to)...)
+		for day := from; !day.After(to); day = day.AddDate(0, 0, 1) {
+			if occurrence, ok := repeat.On(day); ok {
+				spans = append(spans, span{start: occurrence.Start, end: occurrence.End, title: occurrence.Title, repeatID: repeat.ID})
+			}
+		}
 	}
 	return spans, nil
 }
 
-func expandRepeat(repeat RepeatRecord, changes []RepeatChange, from, to time.Time) []span {
-	from = dateOnlyLocal(from)
-	to = dateOnlyLocal(to)
-	start := dateOnlyLocal(repeat.Repeat.Start)
-	if from.Before(start) {
-		from = start
-	}
+// occurrenceProbes is every day of the series within the horizon.
+func occurrenceProbes(series model.Series) []span {
+	from, to := repeatWindow(series.Repeat)
 	out := make([]span, 0)
 	for day := from; !day.After(to); day = day.AddDate(0, 0, 1) {
-		if !repeat.Repeat.OccursOn(day) {
-			continue
+		if occurrence, ok := series.On(day); ok {
+			out = append(out, span{start: occurrence.Start, end: occurrence.End})
 		}
-		change, ok := changeFor(changes, repeat.ID, day)
-		if ok && change.Skipped {
-			continue
-		}
-		spanStart, spanEnd := repeat.Repeat.SpanOn(day)
-		title := repeat.Repeat.Title
-		if ok {
-			spanStart, spanEnd = change.Start, change.End
-			if strings.TrimSpace(change.Title) != "" {
-				title = change.Title
-			}
-		}
-		out = append(out, span{start: spanStart, end: spanEnd, title: title, repeatID: repeat.ID})
-	}
-	return out
-}
-
-func occurrenceProbes(repeat model.Repeat, changes []RepeatChange, id int, dropOverrides bool) []span {
-	from, to := repeatWindow(repeat)
-	out := make([]span, 0)
-	for day := from; !day.After(to); day = day.AddDate(0, 0, 1) {
-		if !repeat.OccursOn(day) {
-			continue
-		}
-		change, ok := changeFor(changes, id, day)
-		if ok && change.Skipped {
-			continue
-		}
-		start, end := repeat.SpanOn(day)
-		if ok && !dropOverrides {
-			start, end = change.Start, change.End
-		}
-		out = append(out, span{start: start, end: end})
 	}
 	return out
 }
 
 func probeRepeat(repeat model.Repeat) []span {
-	from, to := repeatWindow(repeat)
-	out := make([]span, 0)
-	for day := from; !day.After(to); day = day.AddDate(0, 0, 1) {
-		if !repeat.OccursOn(day) {
-			continue
-		}
-		start, end := repeat.SpanOn(day)
-		out = append(out, span{start: start, end: end})
-	}
-	return out
+	return occurrenceProbes(model.Series{Repeat: repeat})
 }
 
 func blockedBy(other span) error {
@@ -767,25 +592,12 @@ func repeatWindow(repeat model.Repeat) (time.Time, time.Time) {
 	return from, to
 }
 
-func nextRepeatID(dbPath string) (int, error) {
-	return nextTableID(dbPath, "repeat")
-}
-
-func nextChangeID(dbPath string) (int, error) {
-	return nextTableID(dbPath, "repeat_change")
-}
-
-func repeatInsertSQL(id int, repeat model.Repeat) string {
-	return "INSERT INTO repeat(id, title, start_at, end_at, freq, until_on, url) VALUES (" + repeatValuesSQL(id, repeat) + ");\n"
-}
-
-func repeatValuesSQL(id int, repeat model.Repeat) string {
-	return fmt.Sprintf("%d, %s, %s, %s, %s, %s, %s",
-		id,
-		sqlString(repeat.Title),
-		sqlString(repeat.Start.Format(model.DateTimeFormat)),
-		sqlString(repeat.End.Format(model.DateTimeFormat)),
-		sqlString(repeat.Freq),
+func repeatValuesSQL(repeat model.Repeat) string {
+	return fmt.Sprintf("%s, %s, %s, %s, %s, %s",
+		sqlite.Quote(repeat.Title),
+		sqlite.Quote(repeat.Start.Format(model.DateTimeFormat)),
+		sqlite.Quote(repeat.End.Format(model.DateTimeFormat)),
+		sqlite.Quote(repeat.Freq),
 		untilSQL(repeat.Until),
 		storedURL(repeat.URL),
 	)
@@ -793,41 +605,12 @@ func repeatValuesSQL(id int, repeat model.Repeat) string {
 
 func repeatUpdateSQL(id int, repeat model.Repeat) string {
 	return fmt.Sprintf("UPDATE repeat SET title = %s, start_at = %s, end_at = %s, freq = %s, until_on = %s, url = %s WHERE id = %d;\n",
-		sqlString(repeat.Title),
-		sqlString(repeat.Start.Format(model.DateTimeFormat)),
-		sqlString(repeat.End.Format(model.DateTimeFormat)),
-		sqlString(repeat.Freq),
+		sqlite.Quote(repeat.Title),
+		sqlite.Quote(repeat.Start.Format(model.DateTimeFormat)),
+		sqlite.Quote(repeat.End.Format(model.DateTimeFormat)),
+		sqlite.Quote(repeat.Freq),
 		untilSQL(repeat.Until),
 		storedURL(repeat.URL),
-		id,
-	)
-}
-
-func changeInsertSQL(id int, change RepeatChange) string {
-	if change.Skipped {
-		return fmt.Sprintf("INSERT INTO repeat_change(id, repeat_id, day, skipped, title, start_at, end_at, url) VALUES (%d, %d, %s, 1, NULL, NULL, NULL, NULL);\n",
-			id, change.RepeatID, sqlString(change.Day.Format(time.DateOnly)))
-	}
-	return fmt.Sprintf("INSERT INTO repeat_change(id, repeat_id, day, skipped, title, start_at, end_at, url) VALUES (%d, %d, %s, 0, %s, %s, %s, %s);\n",
-		id,
-		change.RepeatID,
-		sqlString(change.Day.Format(time.DateOnly)),
-		sqlString(change.Title),
-		sqlString(change.Start.Format(model.DateTimeFormat)),
-		sqlString(change.End.Format(model.DateTimeFormat)),
-		storedChangeURL(change),
-	)
-}
-
-func changeUpdateSQL(id int, change RepeatChange) string {
-	if change.Skipped {
-		return fmt.Sprintf("UPDATE repeat_change SET skipped = 1, title = NULL, start_at = NULL, end_at = NULL, url = NULL WHERE id = %d;\n", id)
-	}
-	return fmt.Sprintf("UPDATE repeat_change SET skipped = 0, title = %s, start_at = %s, end_at = %s, url = %s WHERE id = %d;\n",
-		sqlString(change.Title),
-		sqlString(change.Start.Format(model.DateTimeFormat)),
-		sqlString(change.End.Format(model.DateTimeFormat)),
-		storedChangeURL(change),
 		id,
 	)
 }
@@ -836,7 +619,7 @@ func untilSQL(until time.Time) string {
 	if until.IsZero() {
 		return "NULL"
 	}
-	return sqlString(dateOnlyLocal(until).Format(time.DateOnly))
+	return sqlite.Quote(dateOnlyLocal(until).Format(time.DateOnly))
 }
 
 func parseDay(raw string) (time.Time, error) {

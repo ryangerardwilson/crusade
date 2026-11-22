@@ -6,8 +6,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -19,74 +17,38 @@ import (
 	"github.com/ryangerardwilson/crusade/internal/store"
 )
 
-const (
-	viewMonth  = "month"
-	viewAgenda = "agenda"
+const headerDateFormat = "January 2, 2006 (Monday)"
 
-	monthFocusGrid   = "grid"
-	monthFocusEvents = "events"
-
-	headerDateFormat = "January 2, 2006 (Monday)"
-
-	draftOutcome = "EDIT ME: desired outcome"
-	draftImpact  = "EDIT ME: why it matters"
-
-	modeDo    = "do"
-	modeAlign = "align"
-
-	composeTask = "task"
-	composeWhen = "when"
-)
-
+// appModel is align mode: a list of align records. records is a cache of
+// the store's answer, reloaded after every write.
 type appModel struct {
-	dataPath    string
-	records     []store.Record
-	weekDeleted int
+	dataPath string
+	records  []store.AlignRecord
 
-	view   string
 	width  int
 	height int
 
 	agendaCursor int
 	agendaCol    int
 
-	monthDate        time.Time
-	monthFocus       string
-	monthEventCursor int
-	monthEventCol    int
-
 	showHelp      bool
 	pendingDelete bool
 	status        string
 
-	mode          string
-	composing     bool
-	composeID     int
-	composeText   string
-	composeCursor int
-	composeKind   string
-
 	memory modeMemory
 }
 
-// sessionState is the screen a do or align visit returns to.
+// sessionState is the screen an align visit returns to.
 type sessionState struct {
-	view             string
-	agendaCursor     int
-	agendaCol        int
-	monthDate        time.Time
-	monthFocus       string
-	monthEventCursor int
-	monthEventCol    int
-	showHelp         bool
-	status           string
+	agendaCursor int
+	agendaCol    int
+	showHelp     bool
+	status       string
 }
 
-// modeMemory keeps the do, align, box, cal, and nlp screens while tab moves between them.
+// modeMemory keeps the align, box, cal, and nlp screens while tab moves between them.
 type modeMemory struct {
-	do       sessionState
 	align    sessionState
-	hasDo    bool
 	hasAlign bool
 	box      *boxModel
 	hasBox   bool
@@ -101,30 +63,22 @@ type helpItem struct {
 	description string
 }
 
+// editorFinishedMsg is what Vim left. id is zero for a new record. saved is
+// false when Vim failed or a new record was left blank.
 type editorFinishedMsg struct {
 	id    int
-	draft bool
+	event model.Align
+	saved bool
 	err   error
 }
 
-var openTaskEditor = func(path string, id int, draft bool) tea.Cmd {
+// openTaskEditor edits seed as YAML in a temporary file. Nothing is stored
+// until Vim saves; the caller writes the record from the message.
+var openTaskEditor = func(id int, seed model.Align) tea.Cmd {
 	fail := func(err error) tea.Cmd {
-		return func() tea.Msg { return editorFinishedMsg{id: id, draft: draft, err: err} }
+		return func() tea.Msg { return editorFinishedMsg{id: id, err: err} }
 	}
-	records, err := store.Load(path)
-	if err != nil {
-		return fail(err)
-	}
-	record, found := recordByID(records, id)
-	if !found {
-		return fail(fmt.Errorf("ID %d not found", id))
-	}
-	shown := record.Event
-	if draft {
-		shown.Y = ""
-		shown.Z = ""
-	}
-	payload, err := model.ToYAML(shown)
+	payload, err := model.ToYAML(seed)
 	if err != nil {
 		return fail(err)
 	}
@@ -145,27 +99,27 @@ var openTaskEditor = func(path string, id int, draft bool) tea.Cmd {
 	command := exec.Command("vim", tmpPath)
 	return tea.ExecProcess(command, func(err error) tea.Msg {
 		defer os.Remove(tmpPath)
-		if err != nil {
-			return editorFinishedMsg{id: id, draft: draft, err: err}
-		}
-		edited, readErr := os.ReadFile(tmpPath)
-		if readErr != nil {
-			return editorFinishedMsg{id: id, draft: draft, err: readErr}
-		}
-		event, parseErr := model.FromYAML(edited)
-		if parseErr != nil {
-			if draft && errors.Is(parseErr, model.ErrBlankAlign) {
-				return editorFinishedMsg{id: id, draft: draft}
-			}
-			return editorFinishedMsg{id: id, draft: draft, err: parseErr}
-		}
-		event.Done = record.Event.Done
-		event.DoneAt = record.Event.DoneAt
-		if upErr := store.Update(path, id, event); upErr != nil {
-			return editorFinishedMsg{id: id, draft: draft, err: upErr}
-		}
-		return editorFinishedMsg{id: id, draft: draft}
+		return readEditedTask(id, seed, tmpPath, err)
 	})
+}
+
+func readEditedTask(id int, seed model.Align, path string, vimErr error) editorFinishedMsg {
+	if vimErr != nil {
+		return editorFinishedMsg{id: id, err: vimErr}
+	}
+	edited, err := os.ReadFile(path)
+	if err != nil {
+		return editorFinishedMsg{id: id, err: err}
+	}
+	event, err := model.FromYAML(edited)
+	if err != nil {
+		if errors.Is(err, model.ErrBlankAlign) {
+			return editorFinishedMsg{id: id}
+		}
+		return editorFinishedMsg{id: id, err: err}
+	}
+	event.DoneAt = seed.DoneAt
+	return editorFinishedMsg{id: id, event: event, saved: true}
 }
 
 var (
@@ -183,53 +137,55 @@ var (
 	helpKeyStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255"))
 )
 
-// ExitAfterMode reports that the mode closed crusade.
-// Opening a meeting link from the Super+C window sets it.
-var ExitAfterMode bool
+// Result is how a mode ended. Closed reports that the mode closed crusade,
+// as opening a meeting link from the Super+C window does.
+type Result struct {
+	Code   int
+	Closed bool
+}
 
-func Run(dataPath, mode string, stdout, stderr io.Writer) int {
+// closer is a screen that can close crusade as it quits.
+type closer interface {
+	closedCrusade() bool
+}
+
+// runProgram runs the screen until it quits and reports how it ended.
+func runProgram(start tea.Model, stderr io.Writer) Result {
+	final, err := tea.NewProgram(start, tea.WithAltScreen()).Run()
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return Result{Code: 1}
+	}
+	c, ok := final.(closer)
+	return Result{Closed: ok && c.closedCrusade()}
+}
+
+func Run(dataPath, mode string, stdout, stderr io.Writer) Result {
 	rememberMode(dataPath, mode)
-	if mode == model.ModeBox {
+	switch mode {
+	case model.ModeBox:
 		return runBox(dataPath, stdout, stderr)
-	}
-	if mode == model.ModeCal {
+	case model.ModeCal:
 		return runCal(dataPath, stdout, stderr)
-	}
-	if mode == model.ModeNLP {
+	case model.ModeNLP:
 		return runNLP(dataPath, stdout, stderr)
+	case model.ModeDo:
+		return runDo(dataPath, stdout, stderr)
 	}
 	records, err := store.Load(dataPath)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return 1
+		return Result{Code: 1}
 	}
-	app := newAppModel(dataPath, records)
-	if mode == model.ModeAlign {
-		app.mode = modeAlign
-	}
-	program := tea.NewProgram(app, tea.WithAltScreen())
-	if _, err := program.Run(); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	return 0
+	return runProgram(newAppModel(dataPath, records), stderr)
 }
 
 func rememberMode(dataPath, mode string) {
 	_ = store.SaveLastMode(dataPath, mode)
 }
 
-func newAppModel(dataPath string, records []store.Record) appModel {
-	m := appModel{
-		dataPath:   dataPath,
-		records:    records,
-		view:       viewAgenda,
-		monthDate:  dateOnly(time.Now()),
-		monthFocus: monthFocusGrid,
-		mode:       modeDo,
-	}
-	m.refreshWeekDeleted()
-	return m
+func newAppModel(dataPath string, records []store.AlignRecord) appModel {
+	return appModel{dataPath: dataPath, records: records}
 }
 
 func (m appModel) Init() tea.Cmd {
@@ -248,16 +204,6 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key == "ctrl+c" {
 			return m, tea.Quit
 		}
-		if m.composing {
-			switch key {
-			case "esc":
-				m.cancelCompose()
-			default:
-				m.handleComposeKey(key)
-			}
-			m.clampState()
-			return m, nil
-		}
 		if m.showHelp && key != "tab" {
 			switch key {
 			case "?", "esc":
@@ -267,60 +213,24 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if key == "q" {
-			return m, tea.Quit
-		}
-		if key == "esc" {
-			if m.leaveDoTaskList() {
-				m.clampState()
-				return m, nil
-			}
-			return m, tea.Quit
-		}
-		if key == "tab" {
-			return m.cycleMode()
-		}
 		switch key {
+		case "q", "esc":
+			return m, tea.Quit
+		case "tab":
+			return m.cycleMode()
 		case "?":
 			m.showHelp = true
-		case "a":
-			m.toggleView()
 		case "t":
 			m.jumpToday()
 		case "d":
 			m.handleDelete()
 		case "n":
-			if !m.aligning() {
-				m.beginNewTask()
-				return m, nil
-			}
-			cmd := m.addTaskInVim()
-			return m, cmd
+			return m, m.addTaskInVim()
 		case "e", "i":
-			if !m.aligning() {
-				m.beginEditTask()
-				return m, nil
-			}
-			cmd := m.editTaskInVim()
-			return m, cmd
-		case "r":
-			if !m.aligning() {
-				m.beginReschedule()
-				return m, nil
-			}
-			m.pendingDelete = false
-			if m.showingList() {
-				m.handleAgendaKey(key)
-			} else {
-				m.handleMonthKey(key)
-			}
+			return m, m.editTaskInVim()
 		default:
 			m.pendingDelete = false
-			if m.showingList() {
-				m.handleAgendaKey(key)
-			} else {
-				m.handleMonthKey(key)
-			}
+			m.handleAgendaKey(key)
 		}
 	}
 	m.clampState()
@@ -336,74 +246,17 @@ func (m appModel) View() string {
 	if height <= 0 {
 		height = 30
 	}
-
 	var b strings.Builder
-	weekLine := m.renderWeekDone(width)
-	if m.showingList() {
-		visible := m.visibleRecords()
-		fmt.Fprintf(&b, "%s\n", m.renderBanner(width))
-		reserved := 5
-		if weekLine != "" {
-			fmt.Fprintf(&b, "%s\n", weekLine)
-			reserved++
-		}
-		fmt.Fprintf(&b, "%s\n", infoStyle.Render(m.agendaSummary(visible, width)))
-		b.WriteString(m.renderAgenda(max(1, height-reserved)))
-		if m.composing {
-			fmt.Fprintf(&b, "\n%s\n", infoStyle.Render(m.composeLabel()+m.composeShown()))
-		}
-		if m.status != "" {
-			fmt.Fprintf(&b, "\n%s\n", m.statusStyle().Render(m.status))
-		}
-	} else {
-		visible := m.visibleRecords()
-		fmt.Fprintf(&b, "%s\n", m.renderBanner(width))
-		extra := 0
-		if weekLine != "" {
-			fmt.Fprintf(&b, "%s\n", weekLine)
-			extra = 1
-		}
-		fmt.Fprintf(&b, "%s\n\n", infoStyle.Render(m.monthSummary(visible, width)))
-		// Reserved rows keep the calendar in place while a task is typed or rescheduled.
-		const monthFooterLines = 2
-		b.WriteString(m.renderMonth(width, max(1, height-6-monthFooterLines-extra)))
-		b.WriteByte('\n')
-		b.WriteString(m.monthComposeLine(width))
-		b.WriteByte('\n')
-		b.WriteString(m.monthStatusLine(width))
+	fmt.Fprintf(&b, "%s\n", renderModeBanner("ALIGN", width))
+	fmt.Fprintf(&b, "%s\n", infoStyle.Render(m.agendaSummary(width)))
+	b.WriteString(m.renderAgenda(max(1, height-5)))
+	if m.status != "" {
+		fmt.Fprintf(&b, "\n%s\n", m.statusStyle().Render(m.status))
 	}
 	if m.showHelp {
 		return placeModal(b.String(), m.helpView(width), width, height)
 	}
 	return b.String()
-}
-
-func (m appModel) renderWeekDone(width int) string {
-	if m.aligning() {
-		return ""
-	}
-	label := weekProgressLabel(doneThisWeek(m.records, time.Now()), m.weekDeleted)
-	return infoStyle.Render(truncateText(label, max(20, width)))
-}
-
-func weekProgressLabel(done, deleted int) string {
-	noun := "items"
-	if done == 1 {
-		noun = "item"
-	}
-	return fmt.Sprintf("%d %s done and %d deleted this week", done, noun, deleted)
-}
-
-func (m *appModel) refreshWeekDeleted() {
-	if strings.TrimSpace(m.dataPath) == "" {
-		m.weekDeleted = 0
-		return
-	}
-	count, err := store.DeletedThisWeek(m.dataPath, time.Now())
-	if err != nil {
-		return
-	}
-	m.weekDeleted = count
 }
 
 func (m appModel) statusStyle() lipgloss.Style {
@@ -412,27 +265,6 @@ func (m appModel) statusStyle() lipgloss.Style {
 		return errorStyle
 	}
 	return mutedStyle
-}
-
-func (m appModel) composeLabel() string {
-	if m.composeKind == composeWhen {
-		return "when: "
-	}
-	return "task: "
-}
-
-func (m appModel) monthComposeLine(width int) string {
-	if !m.composing {
-		return " "
-	}
-	return infoStyle.Render(truncateText(m.composeLabel()+m.composeShown(), max(1, width)))
-}
-
-func (m appModel) monthStatusLine(width int) string {
-	if m.status == "" {
-		return " "
-	}
-	return m.statusStyle().Render(truncateText(m.status, max(1, width)))
 }
 
 func renderModeBanner(label string, width int) string {
@@ -448,27 +280,14 @@ func renderModeBanner(label string, width int) string {
 	return name + strings.Repeat(" ", gap) + badge
 }
 
-func (m appModel) renderBanner(width int) string {
-	label := "DO"
-	if m.aligning() {
-		label = "ALIGN"
+func (m appModel) agendaSummary(width int) string {
+	if len(m.records) == 0 {
+		return "empty agenda | crusade -m align -c"
 	}
-	return renderModeBanner(label, width)
-}
-
-func (m appModel) agendaSummary(records []store.Record, width int) string {
-	if len(records) == 0 {
-		if m.aligning() {
-			return "empty agenda | crusade -m align -c"
-		}
-		return "empty list | press n to add a task"
-	}
-	idx := clamp(m.agendaCursor, 0, len(records)-1)
-	event := records[idx].Event
-	when := headerDate(event.X)
+	idx := clamp(m.agendaCursor, 0, len(m.records)-1)
 	parts := []string{
-		fmt.Sprintf("selected %d/%d", idx+1, len(records)),
-		when,
+		fmt.Sprintf("selected %d/%d", idx+1, len(m.records)),
+		headerDate(m.records[idx].Align.X),
 	}
 	return truncateText(strings.Join(parts, " | "), max(20, width))
 }
@@ -483,29 +302,6 @@ func headerDateText(day string) string {
 		return day
 	}
 	return headerDate(parsed)
-}
-
-func (m appModel) monthSummary(records []store.Record, width int) string {
-	selected := headerDate(m.monthDate)
-	dayRecords := m.recordsForDate(m.monthDate)
-	parts := []string{selected}
-	if len(dayRecords) == 0 {
-		if m.aligning() {
-			parts = append(parts, "no outcomes")
-		} else {
-			parts = append(parts, "no tasks")
-		}
-		if next, ok := nextRecord(records, m.monthDate); ok {
-			parts = append(parts, fmt.Sprintf("next %s %s", next.Event.X.Format("Jan 2"), next.Event.Y))
-		}
-		return truncateText(strings.Join(parts, " | "), max(20, width))
-	}
-	if m.aligning() {
-		parts = append(parts, plural(len(dayRecords), "outcome", "outcomes"))
-	} else {
-		parts = append(parts, plural(len(dayRecords), "task", "tasks"))
-	}
-	return truncateText(strings.Join(parts, " | "), max(20, width))
 }
 
 func placeModal(base, modal string, width, height int) string {
@@ -588,55 +384,32 @@ func (m appModel) helpView(width int) string {
 		{key: "j / k", description: "Move row"},
 		{key: "H / L", description: "Previous / next date"},
 	}
-	month := []helpItem{
-		{key: "h / l", description: "Previous / next day"},
-		{key: "j / k", description: "Previous / next week"},
-		{key: "ctrl+h/l", description: "Previous / next month"},
-		{key: "ctrl+k/j", description: "Previous / next year"},
-		{key: "enter", description: "Calendar / day list"},
-	}
-	if !m.aligning() {
-		month = append(month, helpItem{key: "esc", description: "Leave the day list"})
-	}
 	exit := []helpItem{
 		{key: "q", description: "Leave"},
 		{key: "esc", description: "Leave"},
 		{key: "ctrl+c", description: "Leave"},
 	}
-
 	var shortcuts string
 	if innerWidth >= 60 {
 		gap := 4
 		columnWidth := (innerWidth - gap) / 2
-		left := lipgloss.JoinVertical(
-			lipgloss.Left,
+		left := lipgloss.JoinVertical(lipgloss.Left,
 			renderHelpSection("GENERAL", general, columnWidth),
 			"",
 			renderHelpSection("AGENDA", agenda, columnWidth),
 		)
-		rightParts := []string{}
-		if m.mode != modeAlign {
-			rightParts = append(rightParts, renderHelpSection("MONTH", month, columnWidth), "")
-		}
-		rightParts = append(rightParts, renderHelpSection("EXIT", exit, columnWidth))
-		right := lipgloss.JoinVertical(lipgloss.Left, rightParts...)
+		right := renderHelpSection("EXIT", exit, columnWidth)
 		shortcuts = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), right)
 	} else {
-		parts := []string{
+		shortcuts = lipgloss.JoinVertical(lipgloss.Left,
 			renderHelpSection("GENERAL", general, innerWidth),
 			"",
 			renderHelpSection("AGENDA", agenda, innerWidth),
 			"",
-		}
-		if m.mode != modeAlign {
-			parts = append(parts, renderHelpSection("MONTH", month, innerWidth), "")
-		}
-		parts = append(parts, renderHelpSection("EXIT", exit, innerWidth))
-		shortcuts = lipgloss.JoinVertical(lipgloss.Left, parts...)
+			renderHelpSection("EXIT", exit, innerWidth),
+		)
 	}
-
 	header := titleStyle.Render("crusade") + mutedStyle.Render("  QUICK GUIDE")
-	footer := m.helpFooter()
 	body := lipgloss.JoinVertical(
 		lipgloss.Left,
 		header,
@@ -645,7 +418,7 @@ func (m appModel) helpView(width int) string {
 		shortcuts,
 		"",
 		infoStyle.Render(strings.Repeat("─", innerWidth)),
-		footer,
+		m.helpFooter(),
 	)
 	return helpPanelStyle.Width(innerWidth).Render(body)
 }
@@ -661,40 +434,15 @@ func renderHelpSection(title string, items []helpItem, width int) string {
 	return lipgloss.NewStyle().Width(width).Render(strings.Join(lines, "\n"))
 }
 
-func (m *appModel) toggleView() {
-	m.pendingDelete = false
-	m.status = ""
-	if m.mode == modeAlign {
-		m.view = viewAgenda
-		return
-	}
-	if m.view == viewAgenda {
-		m.view = viewMonth
-		m.monthFocus = monthFocusGrid
-		m.monthEventCursor = 0
-		return
-	}
-	m.view = viewAgenda
-}
-
 func (m *appModel) jumpToday() {
 	today := dateOnly(time.Now())
-	if m.showingList() {
-		visible := m.visibleRecords()
-		m.agendaCursor = 0
-		for idx, record := range visible {
-			if !record.Event.X.Before(today) {
-				m.agendaCursor = idx
-				break
-			}
-			if idx == len(visible)-1 {
-				m.agendaCursor = idx
-			}
+	m.agendaCursor = max(0, len(m.records)-1)
+	for idx, record := range m.records {
+		if !record.Align.X.Before(today) {
+			m.agendaCursor = idx
+			return
 		}
-		return
 	}
-	m.monthDate = today
-	m.monthEventCursor = 0
 }
 
 func (m *appModel) handleDelete() {
@@ -703,97 +451,43 @@ func (m *appModel) handleDelete() {
 		m.status = "Press d again to delete the selected outcome."
 		return
 	}
-	var target store.Record
-	found := false
-	if m.showingList() {
-		visible := m.visibleRecords()
-		if len(visible) > 0 {
-			target = visible[clamp(m.agendaCursor, 0, len(visible)-1)]
-			found = true
-		}
-	} else if m.monthFocus == monthFocusEvents {
-		events := m.recordsForDate(m.monthDate)
-		if len(events) > 0 {
-			target = events[clamp(m.monthEventCursor, 0, len(events)-1)]
-			found = true
-		}
-	}
+	m.pendingDelete = false
+	target, found := m.selectedRecord()
 	if !found {
 		m.status = "No item selected."
-		m.pendingDelete = false
 		return
 	}
-	if err := store.Delete(m.dataPath, target.ID); err != nil {
-		m.status = err.Error()
-	} else {
-		if records, err := store.Load(m.dataPath); err == nil {
+	m.apply(store.Delete(m.dataPath, target.ID), "Deleted outcome.")
+}
+
+// apply shows the outcome of a store write and reloads the records.
+func (m *appModel) apply(err error, status string) {
+	if err == nil {
+		var records []store.AlignRecord
+		if records, err = store.Load(m.dataPath); err == nil {
 			m.records = records
 		}
-		m.refreshWeekDeleted()
-		m.status = "Deleted outcome."
 	}
-	m.pendingDelete = false
-}
-
-func (m appModel) aligning() bool {
-	return m.mode != modeDo
-}
-
-func (m appModel) showingList() bool {
-	return m.mode == modeAlign || m.view == viewAgenda
+	if err != nil {
+		m.status = "error: " + err.Error()
+		return
+	}
+	m.status = status
 }
 
 func (m appModel) captureSession() sessionState {
-	return sessionState{
-		view:             m.view,
-		agendaCursor:     m.agendaCursor,
-		agendaCol:        m.agendaCol,
-		monthDate:        m.monthDate,
-		monthFocus:       m.monthFocus,
-		monthEventCursor: m.monthEventCursor,
-		monthEventCol:    m.monthEventCol,
-		showHelp:         m.showHelp,
-		status:           m.status,
-	}
+	return sessionState{agendaCursor: m.agendaCursor, agendaCol: m.agendaCol, showHelp: m.showHelp, status: m.status}
 }
 
 func (m *appModel) restoreSession(s sessionState) {
-	m.view = s.view
 	m.agendaCursor = s.agendaCursor
 	m.agendaCol = s.agendaCol
-	m.monthDate = s.monthDate
-	m.monthFocus = s.monthFocus
-	m.monthEventCursor = s.monthEventCursor
-	m.monthEventCol = s.monthEventCol
 	m.showHelp = s.showHelp
 	m.status = s.status
 	m.pendingDelete = false
 }
 
 func (m appModel) cycleMode() (tea.Model, tea.Cmd) {
-	if !m.aligning() {
-		m.memory.do = m.captureSession()
-		m.memory.hasDo = true
-		m.mode = modeAlign
-		m.pendingDelete = false
-		if m.memory.hasAlign {
-			m.restoreSession(m.memory.align)
-			m.view = viewAgenda
-		} else {
-			m.showHelp = false
-			m.status = ""
-			m.view = viewAgenda
-			m.agendaCursor = 0
-			m.agendaCol = 0
-			m.monthDate = dateOnly(time.Now())
-			m.monthFocus = monthFocusGrid
-			m.monthEventCursor = 0
-			m.monthEventCol = 0
-		}
-		m.clampState()
-		rememberMode(m.dataPath, model.ModeAlign)
-		return m, nil
-	}
 	m.memory.align = m.captureSession()
 	m.memory.hasAlign = true
 	m.pendingDelete = false
@@ -802,6 +496,10 @@ func (m appModel) cycleMode() (tea.Model, tea.Cmd) {
 		box.width = m.width
 		box.height = m.height
 		box.memory = m.memory
+		// The kept screen is a cache: reload it from the store.
+		if err := box.reload(); err != nil {
+			box.errText = err.Error()
+		}
 		rememberMode(m.dataPath, model.ModeBox)
 		return box, nil
 	}
@@ -845,245 +543,30 @@ func (m boxModel) cycleMode() (tea.Model, tea.Cmd) {
 	return openCal(m.dataPath, m.width, m.height, mem)
 }
 
-func (m *appModel) cancelCompose() {
-	m.composing = false
-	m.composeKind = ""
-	m.composeID = 0
-	m.composeText = ""
-	m.composeCursor = 0
-}
-
-func (m *appModel) handleComposeKey(key string) {
-	if key == "enter" {
-		m.commitCompose()
-		return
-	}
-	m.composeText, m.composeCursor, _ = lineedit.Key(m.composeText, m.composeCursor, key)
-}
-
-func (m *appModel) beginNewTask() {
-	m.pendingDelete = false
-	m.composing = true
-	m.composeKind = composeTask
-	m.composeID = 0
-	m.composeText = ""
-	m.composeCursor = 0
-	m.status = m.doPrompt()
-}
-
-func (m *appModel) beginEditTask() {
-	target, found := m.selectedRecord()
-	if !found {
-		m.status = "No task selected to edit."
-		m.pendingDelete = false
-		return
-	}
-	m.pendingDelete = false
-	m.composing = true
-	m.composeKind = composeTask
-	m.composeID = target.ID
-	m.composeText = target.Event.Y
-	m.composeCursor = len([]rune(target.Event.Y))
-	m.status = "Edit task. Enter to save, esc to cancel."
-}
-
-func (m *appModel) beginReschedule() {
-	target, found := m.selectedRecord()
-	if !found {
-		m.status = "No task selected to reschedule."
-		m.pendingDelete = false
-		return
-	}
-	m.pendingDelete = false
-	m.composing = true
-	m.composeKind = composeWhen
-	m.composeID = target.ID
-	m.composeText = doWhenText(target.Event.X)
-	m.composeCursor = len([]rune(m.composeText))
-	m.status = "Reschedule (YYYY-MM-DD). Enter to save, esc to cancel."
-}
-
-func doWhenText(when time.Time) string {
-	if when.Hour() == 23 && when.Minute() == 59 && when.Second() == 59 {
-		return when.Format("2006-01-02")
-	}
-	return when.Format(model.DateTimeFormat)
-}
-
-func (m *appModel) commitCompose() {
-	text := strings.TrimSpace(m.composeText)
-	if m.composeKind == composeWhen {
-		if text == "" {
-			m.status = "Date cannot be empty."
-			return
-		}
-		m.rescheduleDoTask(text)
-		return
-	}
-	if text == "" {
-		m.status = "Task cannot be empty."
-		return
-	}
-	if m.composeID == 0 {
-		m.addDoTask(text)
-		return
-	}
-	m.updateDoTask(text)
-}
-
-func (m *appModel) addDoTask(text string) {
-	event, err := model.NewDoEvent(m.doStamp().Format(model.DateTimeFormat), text)
-	if err != nil {
-		m.status = "error: " + err.Error()
-		return
-	}
-	if _, err := store.AddRecord(m.dataPath, event); err != nil {
-		m.status = "error: " + err.Error()
-		return
-	}
-	m.reloadRecords()
-	m.cancelCompose()
-	m.status = "Added task."
-}
-
-func (m *appModel) updateDoTask(text string) {
-	record, found := recordByID(m.records, m.composeID)
-	if !found {
-		m.cancelCompose()
-		m.status = "No task selected to edit."
-		return
-	}
-	record.Event.Y = text
-	if err := store.Update(m.dataPath, record.ID, record.Event); err != nil {
-		m.status = "error: " + err.Error()
-		return
-	}
-	m.reloadRecords()
-	m.cancelCompose()
-	m.status = "Updated task."
-}
-
-func (m *appModel) rescheduleDoTask(raw string) {
-	record, found := recordByID(m.records, m.composeID)
-	if !found {
-		m.cancelCompose()
-		m.status = "No task selected to reschedule."
-		return
-	}
-	when, err := normalizeDoWhen(raw)
-	if err != nil {
-		m.status = "error: " + err.Error()
-		return
-	}
-	event, err := model.NewDoEvent(when, record.Event.Y)
-	if err != nil {
-		m.status = "error: " + err.Error()
-		return
-	}
-	event.Done = record.Event.Done
-	event.DoneAt = record.Event.DoneAt
-	if err := store.Update(m.dataPath, record.ID, event); err != nil {
-		m.status = "error: " + err.Error()
-		return
-	}
-	m.reloadRecords()
-	m.cancelCompose()
-	m.status = "Rescheduled task."
-}
-
-func normalizeDoWhen(raw string) (string, error) {
-	value := strings.TrimSpace(raw)
-	if len(value) == 10 {
-		if day, err := time.ParseInLocation("2006-01-02", value, time.Local); err == nil {
-			stamp := time.Date(day.Year(), day.Month(), day.Day(), 23, 59, 59, 0, time.Local)
-			return stamp.Format(model.DateTimeFormat), nil
-		}
-	}
-	parsed, err := model.ParseDateTime(value)
-	if err != nil {
-		return "", err
-	}
-	return parsed.Format(model.DateTimeFormat), nil
-}
-
-func (m *appModel) reloadRecords() {
-	records, err := store.Load(m.dataPath)
-	if err != nil {
-		m.status = "error: " + err.Error()
-		return
-	}
-	m.records = records
-	m.refreshWeekDeleted()
-}
-
-func (m appModel) doStamp() time.Time {
-	day := dateOnly(time.Now())
-	if m.view == viewMonth {
-		day = dateOnly(m.monthDate)
-	}
-	return time.Date(day.Year(), day.Month(), day.Day(), 23, 59, 59, 0, time.Local)
-}
-
-func (m appModel) doPrompt() string {
-	stamp := m.doStamp()
-	when := "today"
-	if m.view == viewMonth && !sameDate(dateOnly(stamp), dateOnly(time.Now())) {
-		when = stamp.Format("2006-01-02")
-	}
-	return "Task for " + when + ". Enter to save, esc to cancel."
-}
-
 func (m appModel) helpGeneral() []helpItem {
-	items := []helpItem{
+	return []helpItem{
 		{key: "tab", description: "Align / box / cal / nlp"},
+		{key: "t", description: "Jump to today"},
+		{key: "n", description: "New task in Vim"},
+		{key: "e", description: "Edit selected in Vim"},
+		{key: "space", description: "Mark selected done"},
+		{key: "dd", description: "Delete selected"},
+		{key: "? / esc", description: "Close this guide"},
 	}
-	if m.mode != modeAlign {
-		items = append(items, helpItem{key: "a", description: "Agenda / month"})
-	}
-	items = append(items, helpItem{key: "t", description: "Jump to today"})
-	if m.aligning() {
-		items = append(items,
-			helpItem{key: "n", description: "New task in Vim"},
-			helpItem{key: "e", description: "Edit selected in Vim"},
-		)
-	} else {
-		items = append(items,
-			helpItem{key: "n", description: "New task"},
-			helpItem{key: "e", description: "Edit task text"},
-			helpItem{key: "r", description: "Reschedule selected"},
-		)
-	}
-	return append(items,
-		helpItem{key: "space", description: "Mark selected done"},
-		helpItem{key: "dd", description: "Delete selected"},
-		helpItem{key: "? / esc", description: "Close this guide"},
-	)
 }
 
 func (m appModel) helpFooter() string {
-	if !m.aligning() {
-		return lipgloss.JoinVertical(
-			lipgloss.Left,
-			sectionStyle.Render("DO MODE"),
-			mutedStyle.Render("n adds a task for today, or for the selected day in the open month"),
-			mutedStyle.Render("e edits the text · r reschedules the selected task"),
-			mutedStyle.Render("While typing: ctrl+a/e/b/f/h/d, alt+b/f"),
-			mutedStyle.Render("tab cycles align, box, cal, and nlp"),
-		)
-	}
-	lines := []string{
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
 		sectionStyle.Render("VIM TASK FILE"),
 		mutedStyle.Render("n adds on the selected date · e edits the selected task"),
 		mutedStyle.Render("Vim edits that one job as YAML, then crusade saves it"),
-	}
-	if m.mode == modeAlign {
-		lines = append(lines, mutedStyle.Render("Align is a list"))
-	}
-	lines = append(lines, mutedStyle.Render("tab cycles align, box, cal, and nlp"))
-	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+		mutedStyle.Render("Align is a list"),
+		mutedStyle.Render("tab cycles align, box, cal, and nlp"),
+	)
 }
 
-func renderTaskLines(records []store.Record, includeDate bool, height int, selected int) string {
+func renderTaskLines(records []store.AlignRecord, includeDate bool, height int, selected int) string {
 	if height <= 0 || len(records) == 0 {
 		return ""
 	}
@@ -1098,9 +581,9 @@ func renderTaskLines(records []store.Record, includeDate bool, height int, selec
 	var b strings.Builder
 	written := 0
 	for index := start; index < len(records) && written < height; index++ {
-		event := records[index].Event
+		event := records[index].Align
 		mark := "[ ]"
-		if event.Done {
+		if event.Done() {
 			mark = "[x]"
 		}
 		text := event.Y
@@ -1120,38 +603,16 @@ func renderTaskLines(records []store.Record, includeDate bool, height int, selec
 	return b.String()
 }
 
-func (m appModel) composeShown() string {
-	return composeShown(m.composeText, m.composeCursor)
-}
-
 func composeShown(text string, cursor int) string {
 	return lineedit.Show(text, cursor, func(cell string) string { return cursorStyle.Render(cell) })
 }
 
-func (m *appModel) insertCompose(text string) {
-	m.composeText, m.composeCursor = lineedit.Insert(m.composeText, m.composeCursor, text)
-}
-
-// Architecture exception (gates §2.7): a new align task is a draft row that
-// Vim edits in place, and finishEditor deletes it when Vim fails or the draft
-// is left blank. A crash while Vim is open leaves the draft row. Remove once
-// Vim edits a temporary file and the row is added on save.
+// addTaskInVim opens Vim on a new record for the selected date. The record
+// is stored only when Vim saves it with an outcome and an impact.
 func (m *appModel) addTaskInVim() tea.Cmd {
-	selected := m.selectedDate()
-	event := model.Event{
-		Mode: model.ModeAlign,
-		X:    time.Date(selected.Year(), selected.Month(), selected.Day(), 0, 0, 0, 0, selected.Location()),
-		Y:    draftOutcome,
-		Z:    draftImpact,
-	}
-	id, err := store.AddRecord(m.dataPath, event)
-	if err != nil {
-		m.status = "error: " + err.Error()
-		return nil
-	}
 	m.pendingDelete = false
-	m.status = fmt.Sprintf("Editing new task %d in Vim...", id)
-	return openTaskEditor(m.dataPath, id, true)
+	m.status = "Editing a new task in Vim..."
+	return openTaskEditor(0, model.DefaultAlign(m.selectedDate()))
 }
 
 func (m *appModel) editTaskInVim() tea.Cmd {
@@ -1163,117 +624,66 @@ func (m *appModel) editTaskInVim() tea.Cmd {
 	}
 	m.pendingDelete = false
 	m.status = fmt.Sprintf("Editing task %d in Vim...", target.ID)
-	return openTaskEditor(m.dataPath, target.ID, false)
+	return openTaskEditor(target.ID, target.Align)
 }
 
 func (m *appModel) finishEditor(message editorFinishedMsg) {
-	if message.err != nil {
-		if message.draft {
-			_ = store.Delete(m.dataPath, message.id)
-			m.refreshWeekDeleted()
-		}
+	switch {
+	case message.err != nil:
 		m.status = fmt.Sprintf("error: Vim exited: %v", message.err)
-		return
+	case !message.saved && message.id == 0:
+		m.status = "New task cancelled."
+	case !message.saved:
+		m.status = "Saved."
+	case message.id == 0:
+		m.apply(store.Add(m.dataPath, message.event), "Saved.")
+	default:
+		m.apply(store.Update(m.dataPath, message.id, message.event), "Saved.")
 	}
-	records, err := store.Load(m.dataPath)
-	if err != nil {
-		m.status = "error: " + err.Error()
-		return
-	}
-	if message.draft {
-		record, found := recordByID(records, message.id)
-		if !found {
-			m.records = records
-			m.refreshWeekDeleted()
-			m.status = "New task cancelled."
-			return
-		}
-		if record.Event.Y == draftOutcome && record.Event.Z == draftImpact {
-			if err := store.Delete(m.dataPath, message.id); err != nil {
-				m.status = "error: " + err.Error()
-				return
-			}
-			records, err = store.Load(m.dataPath)
-			if err != nil {
-				m.status = "error: " + err.Error()
-				return
-			}
-			m.records = records
-			m.refreshWeekDeleted()
-			m.status = "New task cancelled."
-			return
-		}
-	}
-	m.records = records
-	m.status = "Saved."
 }
 
 func (m appModel) selectedDate() time.Time {
-	if m.view == viewMonth && m.mode != modeAlign {
-		return dateOnly(m.monthDate)
-	}
 	if target, found := m.selectedRecord(); found {
-		return dateOnly(target.Event.X)
+		return dateOnly(target.Align.X)
 	}
 	return dateOnly(time.Now())
 }
 
-func (m appModel) selectedRecord() (store.Record, bool) {
-	if m.showingList() {
-		visible := m.visibleRecords()
-		if len(visible) == 0 {
-			return store.Record{}, false
-		}
-		return visible[clamp(m.agendaCursor, 0, len(visible)-1)], true
+func (m appModel) selectedRecord() (store.AlignRecord, bool) {
+	if len(m.records) == 0 {
+		return store.AlignRecord{}, false
 	}
-	events := m.recordsForDate(m.monthDate)
-	if len(events) == 0 {
-		return store.Record{}, false
-	}
-	return events[clamp(m.monthEventCursor, 0, len(events)-1)], true
+	return m.records[clamp(m.agendaCursor, 0, len(m.records)-1)], true
 }
 
-func recordByID(records []store.Record, id int) (store.Record, bool) {
+func recordByID(records []store.AlignRecord, id int) (store.AlignRecord, bool) {
 	for _, record := range records {
 		if record.ID == id {
 			return record, true
 		}
 	}
-	return store.Record{}, false
+	return store.AlignRecord{}, false
 }
 
 func (m *appModel) toggleDone() {
+	m.pendingDelete = false
 	record, found := m.selectedRecord()
 	if !found {
-		m.pendingDelete = false
 		m.status = "No task selected."
 		return
 	}
-	record.Event.Done = !record.Event.Done
-	if record.Event.Done {
-		record.Event.DoneAt = time.Now()
+	status := "Cleared."
+	if record.Align.Done() {
+		record.Align.DoneAt = time.Time{}
 	} else {
-		record.Event.DoneAt = time.Time{}
+		record.Align.DoneAt = time.Now()
+		status = "Marked done."
 	}
-	if err := store.Update(m.dataPath, record.ID, record.Event); err != nil {
-		m.pendingDelete = false
-		m.status = "error: " + err.Error()
-		return
-	}
-	m.reloadRecords()
-	m.pendingDelete = false
-	if strings.HasPrefix(m.status, "error:") {
-		return
-	}
-	if record.Event.Done {
-		m.status = "Marked done."
-	} else {
-		m.status = "Cleared."
-	}
+	m.apply(store.Update(m.dataPath, record.ID, record.Align), status)
 }
 
 func (m *appModel) handleAgendaKey(key string) {
-	visible := m.visibleRecords()
+	visible := m.records
 	switch key {
 	case " ":
 		m.toggleDone()
@@ -1297,18 +707,18 @@ func (m *appModel) handleAgendaKey(key string) {
 }
 
 func (m *appModel) agendaJumpDay(direction int) {
-	visible := m.visibleRecords()
+	visible := m.records
 	if len(visible) == 0 {
 		return
 	}
 	cur := clamp(m.agendaCursor, 0, len(visible)-1)
-	curDay := dateOnly(visible[cur].Event.X)
+	curDay := dateOnly(visible[cur].Align.X)
 	if direction < 0 {
 		for idx := cur - 1; idx >= 0; idx-- {
-			day := dateOnly(visible[idx].Event.X)
+			day := dateOnly(visible[idx].Align.X)
 			if day.Before(curDay) {
 				for first := 0; first <= idx; first++ {
-					if sameDate(dateOnly(visible[first].Event.X), day) {
+					if sameDate(dateOnly(visible[first].Align.X), day) {
 						m.agendaCursor = first
 						return
 					}
@@ -1318,7 +728,7 @@ func (m *appModel) agendaJumpDay(direction int) {
 		return
 	}
 	for idx := cur + 1; idx < len(visible); idx++ {
-		day := dateOnly(visible[idx].Event.X)
+		day := dateOnly(visible[idx].Align.X)
 		if day.After(curDay) {
 			m.agendaCursor = idx
 			return
@@ -1326,206 +736,16 @@ func (m *appModel) agendaJumpDay(direction int) {
 	}
 }
 
-func (m *appModel) leaveDoTaskList() bool {
-	if m.aligning() || m.view != viewMonth || m.monthFocus != monthFocusEvents {
-		return false
-	}
-	m.monthFocus = monthFocusGrid
-	m.monthEventCursor = 0
-	m.pendingDelete = false
-	m.status = ""
-	return true
-}
-
-func (m *appModel) handleMonthKey(key string) {
-	if m.monthFocus == monthFocusEvents {
-		switch key {
-		case " ":
-			m.toggleDone()
-		case "enter":
-			m.monthFocus = monthFocusGrid
-		case "j", "down":
-			m.monthEventCursor++
-		case "k", "up":
-			m.monthEventCursor--
-		case "h", "left":
-			m.monthEventCol--
-		case "l", "right":
-			m.monthEventCol++
-		case "ctrl+h", "ctrl+l", "ctrl+j", "ctrl+k":
-			m.monthFocus = monthFocusGrid
-			m.monthEventCursor = 0
-			m.handleMonthKey(key)
-		}
-		return
-	}
-
-	switch key {
-	case "enter":
-		if len(m.recordsForDate(m.monthDate)) > 0 {
-			m.monthFocus = monthFocusEvents
-			m.monthEventCursor = 0
-		} else {
-			m.status = "No outcomes on selected day."
-		}
-	case "h", "left":
-		m.monthDate = m.monthDate.AddDate(0, 0, -1)
-		m.monthEventCursor = 0
-	case "l", "right":
-		m.monthDate = m.monthDate.AddDate(0, 0, 1)
-		m.monthEventCursor = 0
-	case "j", "down":
-		m.monthDate = m.monthDate.AddDate(0, 0, 7)
-		m.monthEventCursor = 0
-	case "k", "up":
-		m.monthDate = m.monthDate.AddDate(0, 0, -7)
-		m.monthEventCursor = 0
-	case "ctrl+h":
-		m.monthDate = moveMonth(m.monthDate, -1)
-		m.monthEventCursor = 0
-	case "ctrl+l":
-		m.monthDate = moveMonth(m.monthDate, 1)
-		m.monthEventCursor = 0
-	case "ctrl+k":
-		m.monthDate = moveMonth(m.monthDate, -12)
-		m.monthEventCursor = 0
-	case "ctrl+j":
-		m.monthDate = moveMonth(m.monthDate, 12)
-		m.monthEventCursor = 0
-	}
-}
-
 func (m *appModel) clampState() {
-	visible := m.visibleRecords()
-	m.agendaCursor = clamp(m.agendaCursor, 0, max(0, len(visible)-1))
-	agendaMax := 3
-	monthMax := 3
-	if !m.aligning() {
-		agendaMax = 1
-		monthMax = 0
-	}
-	m.agendaCol = clamp(m.agendaCol, 0, agendaMax)
-	m.monthDate = dateOnly(m.monthDate)
-	events := m.recordsForDate(m.monthDate)
-	m.monthEventCursor = clamp(m.monthEventCursor, 0, max(0, len(events)-1))
-	m.monthEventCol = clamp(m.monthEventCol, 0, monthMax)
-	if len(events) == 0 && m.monthFocus == monthFocusEvents {
-		m.monthFocus = monthFocusGrid
-	}
-	if m.view != viewAgenda && m.view != viewMonth {
-		m.view = viewMonth
-	}
-	if m.monthFocus != monthFocusGrid && m.monthFocus != monthFocusEvents {
-		m.monthFocus = monthFocusGrid
-	}
+	m.agendaCursor = clamp(m.agendaCursor, 0, max(0, len(m.records)-1))
+	m.agendaCol = clamp(m.agendaCol, 0, 3)
 }
 
 func (m appModel) renderAgenda(height int) string {
-	records := m.visibleRecords()
-	if len(records) == 0 {
-		if m.aligning() {
-			return "No tasks yet. Press n or use crusade -m align -c.\n"
-		}
-		return "No tasks yet. Press n to add one.\n"
+	if len(m.records) == 0 {
+		return "No tasks yet. Press n or use crusade -m align -c.\n"
 	}
-	return renderTaskLines(records, true, height, m.agendaCursor)
-}
-
-func (m appModel) renderMonth(width int, height int) string {
-	if height <= 0 {
-		return ""
-	}
-	return padToHeight(m.renderMonthBody(width, height), height)
-}
-
-func (m appModel) renderMonthBody(width int, height int) string {
-	if height <= 0 {
-		return ""
-	}
-	weeks := monthWeeks(m.monthDate)
-	gridLines := renderMonthGrid(weeks, m.monthDate, m.eventsByDate(), width)
-	eventRows := m.recordsForDate(m.monthDate)
-
-	var b strings.Builder
-	monthTitle := m.monthDate.Format("January, 2006")
-	b.WriteString(sectionHeading(monthTitle, width))
-	b.WriteByte('\n')
-
-	available := height - 1
-	if available > len(gridLines)+6 {
-		b.WriteByte('\n')
-		available--
-	}
-	gridBudget := len(gridLines)
-	if available < gridBudget {
-		gridBudget = available
-	}
-	for idx := 0; idx < gridBudget; idx++ {
-		b.WriteString(gridLines[idx])
-		b.WriteByte('\n')
-	}
-
-	remaining := available - gridBudget
-	if remaining <= 0 {
-		return b.String()
-	}
-	writeGap(&b, &remaining, 1)
-	if remaining <= 0 {
-		return b.String()
-	}
-
-	b.WriteString(sectionHeading("selected day", width))
-	b.WriteByte('\n')
-	remaining--
-	if remaining <= 0 {
-		return b.String()
-	}
-	writeGap(&b, &remaining, 1)
-	if remaining <= 0 {
-		return b.String()
-	}
-
-	selectedLabel := m.monthDate.Format("2006-01-02")
-	noun := "tasks"
-	if m.aligning() {
-		noun = "outcomes"
-	}
-	if len(eventRows) == 0 {
-		fmt.Fprintf(&b, "%s\n", mutedStyle.Render(fmt.Sprintf("%s has no %s", selectedLabel, noun)))
-		remaining--
-		if remaining > 0 {
-			if next, ok := nextRecord(m.visibleRecords(), m.monthDate); ok {
-				fmt.Fprintf(&b, "%s\n", infoStyle.Render(truncateText(fmt.Sprintf("next: %s  %s", next.Event.X.Format("Jan 2"), next.Event.Y), max(20, width))))
-			}
-		}
-		return b.String()
-	}
-	if m.aligning() {
-		fmt.Fprintf(&b, "%s\n", sectionStyle.Render(fmt.Sprintf("%s %s (%d)", selectedLabel, noun, len(eventRows))))
-		remaining--
-		if remaining <= 0 {
-			return b.String()
-		}
-	}
-	b.WriteString(renderTaskLines(eventRows, false, remaining, m.monthEventCursor))
-	return b.String()
-}
-
-func nextRecord(records []store.Record, day time.Time) (store.Record, bool) {
-	day = dateOnly(day)
-	for _, record := range records {
-		if record.Event.X.After(day) {
-			return record, true
-		}
-	}
-	return store.Record{}, false
-}
-
-func plural(count int, singular string, plural string) string {
-	if count == 1 {
-		return fmt.Sprintf("1 %s", singular)
-	}
-	return fmt.Sprintf("%d %s", count, plural)
+	return renderTaskLines(m.records, true, height, m.agendaCursor)
 }
 
 func truncateText(value string, width int) string {
@@ -1558,210 +778,6 @@ func padToHeight(content string, height int) string {
 		lines = append(lines, " ")
 	}
 	return strings.Join(lines, "\n")
-}
-
-func writeGap(b *strings.Builder, remaining *int, lines int) {
-	for idx := 0; idx < lines && *remaining > 0; idx++ {
-		b.WriteByte('\n')
-		*remaining--
-	}
-}
-
-func monthGridWidth(width int) int {
-	cellWidth := 7
-	if cellWidth*7 > width {
-		cellWidth = max(4, width/7)
-	}
-	if cellWidth < 1 {
-		cellWidth = 1
-	}
-	return cellWidth * 7
-}
-
-func renderMonthGrid(weeks [][]time.Time, selected time.Time, events map[time.Time]int, width int) []string {
-	cellWidth := 7
-	if width > 0 {
-		cellWidth = monthGridWidth(width) / 7
-	}
-	weekdays := []string{"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}
-	lines := make([]string, 0, len(weeks)+1)
-	header := make([]string, 0, len(weekdays))
-	for _, day := range weekdays {
-		header = append(header, mutedStyle.Render(pad(day, cellWidth, "left")))
-	}
-	lines = append(lines, strings.Join(header, ""))
-
-	today := dateOnly(time.Now())
-	selected = dateOnly(selected)
-	for _, week := range weeks {
-		cells := make([]string, 0, len(week))
-		for _, day := range week {
-			day = dateOnly(day)
-			cells = append(cells, renderMonthDayCell(day, selected, today, events[day], cellWidth))
-		}
-		lines = append(lines, strings.Join(cells, ""))
-	}
-	return lines
-}
-
-func renderMonthDayCell(day time.Time, selected time.Time, today time.Time, eventCount int, cellWidth int) string {
-	day = dateOnly(day)
-	selected = dateOnly(selected)
-	today = dateOnly(today)
-
-	if sameDate(day, selected) {
-		return activeCellStyle.Render(pad(monthDayLabel(day, eventCount, cellWidth), cellWidth, "left"))
-	}
-	if sameDate(day, today) {
-		return renderTodayCell(day, eventCount, cellWidth)
-	}
-
-	cell := pad(monthDayLabel(day, eventCount, cellWidth), cellWidth, "left")
-	switch {
-	case eventCount > 0 && day.Month() == selected.Month():
-		return eventDayStyle.Render(cell)
-	case day.Month() != selected.Month():
-		return mutedStyle.Render(cell)
-	default:
-		return cell
-	}
-}
-
-func renderTodayCell(day time.Time, eventCount int, cellWidth int) string {
-	dayNumber := strconv.Itoa(day.Day())
-	prefix := ""
-	if day.Day() < 10 && cellWidth >= 2 {
-		prefix = " "
-	}
-	suffix := ""
-	if eventCount > 0 && cellWidth >= 7 {
-		suffix = fmt.Sprintf("*%d", min(eventCount, 99))
-	}
-	visibleWidth := len(prefix) + len(dayNumber) + len(suffix)
-	if visibleWidth > cellWidth {
-		suffix = ""
-		visibleWidth = len(prefix) + len(dayNumber)
-	}
-	if visibleWidth > cellWidth {
-		prefix = ""
-		visibleWidth = len(dayNumber)
-	}
-	if visibleWidth > cellWidth {
-		dayNumber = dayNumber[len(dayNumber)-cellWidth:]
-		visibleWidth = len(dayNumber)
-	}
-	return prefix + todayStyle.Render(dayNumber) + suffix + strings.Repeat(" ", max(0, cellWidth-visibleWidth))
-}
-
-func monthDayLabel(day time.Time, eventCount int, cellWidth int) string {
-	label := fmt.Sprintf("%2d", day.Day())
-	if eventCount > 0 && cellWidth >= 7 {
-		label = fmt.Sprintf("%2d*%d", day.Day(), min(eventCount, 99))
-	}
-	return label
-}
-
-func monthWeeks(selected time.Time) [][]time.Time {
-	first := time.Date(selected.Year(), selected.Month(), 1, 0, 0, 0, 0, selected.Location())
-	offset := (int(first.Weekday()) + 6) % 7
-	start := first.AddDate(0, 0, -offset)
-	last := first.AddDate(0, 1, -1)
-	weeks := make([][]time.Time, 0, 6)
-	for day := start; !day.After(last) || day.Weekday() != time.Monday; day = day.AddDate(0, 0, 7) {
-		week := make([]time.Time, 0, 7)
-		for idx := 0; idx < 7; idx++ {
-			week = append(week, day.AddDate(0, 0, idx))
-		}
-		weeks = append(weeks, week)
-		if week[6].After(last) {
-			break
-		}
-	}
-	return weeks
-}
-
-func (m appModel) visibleRecords() []store.Record {
-	records := make([]store.Record, 0, len(m.records))
-	for _, record := range m.records {
-		if m.aligning() {
-			if record.Event.IsDo() {
-				continue
-			}
-		} else if !record.Event.IsDo() {
-			continue
-		}
-		records = append(records, record)
-	}
-	return records
-}
-
-func (m appModel) recordsForDate(day time.Time) []store.Record {
-	day = dateOnly(day)
-	records := make([]store.Record, 0)
-	for _, record := range m.visibleRecords() {
-		if sameDate(dateOnly(record.Event.X), day) {
-			records = append(records, record)
-		}
-	}
-	sort.SliceStable(records, func(i, j int) bool {
-		return records[i].Event.X.Before(records[j].Event.X)
-	})
-	return records
-}
-
-func (m appModel) eventsByDate() map[time.Time]int {
-	events := make(map[time.Time]int)
-	for _, record := range m.visibleRecords() {
-		events[dateOnly(record.Event.X)]++
-	}
-	return events
-}
-
-func pad(value string, width int, align string) string {
-	if width <= 0 {
-		return ""
-	}
-	if len(value) > width {
-		if align == "right" {
-			value = value[len(value)-width:]
-		} else {
-			value = value[:width]
-		}
-	}
-	switch align {
-	case "right":
-		return strings.Repeat(" ", width-len(value)) + value
-	case "center":
-		left := (width - len(value)) / 2
-		right := width - len(value) - left
-		return strings.Repeat(" ", left) + value + strings.Repeat(" ", right)
-	default:
-		return value + strings.Repeat(" ", width-len(value))
-	}
-}
-
-func moveMonth(day time.Time, delta int) time.Time {
-	day = dateOnly(day)
-	firstTarget := time.Date(day.Year(), day.Month(), 1, 0, 0, 0, 0, day.Location()).AddDate(0, delta, 0)
-	maxDay := firstTarget.AddDate(0, 1, -1).Day()
-	return time.Date(firstTarget.Year(), firstTarget.Month(), min(day.Day(), maxDay), 0, 0, 0, 0, day.Location())
-}
-
-// doneThisWeek counts do tasks marked done during the Monday-Sunday week that contains now.
-func doneThisWeek(records []store.Record, now time.Time) int {
-	start := mondayOf(now)
-	end := start.AddDate(0, 0, 7)
-	count := 0
-	for _, record := range records {
-		if !record.Event.IsDo() || !record.Event.Done || record.Event.DoneAt.IsZero() {
-			continue
-		}
-		day := dateOnly(record.Event.DoneAt)
-		if !day.Before(start) && day.Before(end) {
-			count++
-		}
-	}
-	return count
 }
 
 func mondayOf(day time.Time) time.Time {

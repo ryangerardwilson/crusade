@@ -7,7 +7,7 @@ import (
 )
 
 func TestAlignYAMLRoundTrip(t *testing.T) {
-	event, err := NewEvent("2026-01-26 18:30:00", "ship the patch", "reduce drift")
+	event, err := NewAlign("2026-01-26 18:30:00", "ship the patch", "reduce drift")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +27,7 @@ func TestAlignYAMLRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if anyOf(got.Y != event.Y, got.Z != event.Z, !got.X.Equal(event.X), got.Mode != ModeAlign) {
+	if anyOf(got.Y != event.Y, got.Z != event.Z, !got.X.Equal(event.X), got.Done(), !got.DoneAt.IsZero()) {
 
 		t.Fatalf("got = %#v", got)
 	}
@@ -39,7 +39,7 @@ func TestAlignYAMLRoundTrip(t *testing.T) {
 
 		t.Fatalf("plain = %#v", plain)
 	}
-	draft, err := ToYAML(Event{X: event.X})
+	draft, err := ToYAML(Align{X: event.X})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestAlignYAMLRoundTrip(t *testing.T) {
 
 		t.Fatalf("nsm err = %v", err)
 	}
-	if _, err := NewEvent("tomorrow", "outcome", "impact"); err == nil {
+	if _, err := NewAlign("tomorrow", "outcome", "impact"); err == nil {
 		t.Fatal("bad date accepted")
 	}
 }

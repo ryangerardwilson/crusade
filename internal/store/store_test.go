@@ -1,6 +1,8 @@
 package store
 
 import (
+	"github.com/ryangerardwilson/crusade/internal/sqlite"
+
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,11 +13,14 @@ import (
 	"github.com/ryangerardwilson/crusade/internal/model"
 )
 
-func TestSaveLoadPreservesStableIDsAndSorts(t *testing.T) {
+func TestLoadSortsByDateAndKeepsStableIDs(t *testing.T) {
 	path := testDB(t)
-	later := mustEvent(t, "2026-02-01 00:00", "later")
-	earlier := mustEvent(t, "2026-01-01 00:00", "earlier")
-	if err := Save(path, []Record{{ID: 42, Event: later}, {ID: 7, Event: earlier}}); err != nil {
+	laterID, err := AddRecord(path, mustEvent(t, "2026-02-01 00:00", "later"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	earlierID, err := AddRecord(path, mustEvent(t, "2026-01-01 00:00", "earlier"))
+	if err != nil {
 		t.Fatal(err)
 	}
 	records, err := Load(path)
@@ -25,11 +30,8 @@ func TestSaveLoadPreservesStableIDsAndSorts(t *testing.T) {
 	if len(records) != 2 {
 		t.Fatalf("record count = %d", len(records))
 	}
-	if records[0].ID != 7 || records[0].Event.Y != "earlier" || records[1].ID != 42 {
+	if records[0].ID != earlierID || records[0].Align.Y != "earlier" || records[1].ID != laterID {
 		t.Fatalf("stable sorted records = %#v", records)
-	}
-	if records[0].Event.Mode != model.ModeAlign || records[1].Event.Mode != model.ModeAlign {
-		t.Fatalf("modes = %#v", records)
 	}
 }
 
@@ -56,7 +58,7 @@ func TestCRUDUsesStableIDsAcrossChronologicalReordering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if records[1].ID != id || records[1].Event.Y != "updated by stable id" {
+	if records[1].ID != id || records[1].Align.Y != "updated by stable id" {
 		t.Fatalf("update targeted wrong record: %#v", records)
 	}
 	if err := Delete(path, secondID); err != nil {
@@ -68,6 +70,9 @@ func TestCRUDUsesStableIDsAcrossChronologicalReordering(t *testing.T) {
 	}
 	if len(records) != 1 || records[0].ID != id {
 		t.Fatalf("delete targeted wrong record: %#v", records)
+	}
+	if err := Delete(path, secondID); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("missing delete err=%v", err)
 	}
 }
 
@@ -87,7 +92,8 @@ func TestOpenCreatesEmptyDatabaseAndKeepsRows(t *testing.T) {
 	if len(records) != 0 {
 		t.Fatalf("initialized records = %#v", records)
 	}
-	if err := Save(dbPath, []Record{{ID: 2, Event: mustEvent(t, "2026-01-01 00:00", "kept")}}); err != nil {
+	id, err := AddRecord(dbPath, mustEvent(t, "2026-01-01 00:00", "kept"))
+	if err != nil {
 		t.Fatal(err)
 	}
 	created, err = Open(dbPath)
@@ -98,41 +104,44 @@ func TestOpenCreatesEmptyDatabaseAndKeepsRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 1 || records[0].ID != 2 || records[0].Event.Y != "kept" {
+	if len(records) != 1 || records[0].ID != id || records[0].Align.Y != "kept" {
 		t.Fatalf("records = %#v", records)
 	}
 }
 
-func TestSaveRejectsEmptyImpact(t *testing.T) {
+func TestAddRejectsEmptyImpact(t *testing.T) {
 	dbPath := testDB(t)
-	event := model.Event{X: mustEvent(t, "2026-01-01 00:00", "kept").X, Y: "kept"}
-	if err := Save(dbPath, []Record{{ID: 1, Event: event}}); err == nil || !strings.Contains(err.Error(), "impact") {
-		t.Fatalf("save without impact = %v", err)
+	event := model.Align{X: mustEvent(t, "2026-01-01 00:00", "kept").X, Y: "kept"}
+	if err := Add(dbPath, event); err == nil || !strings.Contains(err.Error(), "impact") {
+		t.Fatalf("add without impact = %v", err)
 	}
 }
 
-func TestSaveWritesTheAppSQLite(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("SQLX_ROOT", root)
-	db := DatabasePath()
+func TestAddWritesTheAppSQLite(t *testing.T) {
+	db := testDB(t)
 	event := mustEvent(t, "2026-04-01 00:00", "stored in sqlx")
-	if err := Save(db, []Record{{ID: 4, Event: event}}); err != nil {
+	if err := Add(db, event); err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command("/usr/bin/sqlite3", db, "select id, y from task").CombinedOutput()
+	out, err := exec.Command("/usr/bin/sqlite3", db, "select id, y from align").CombinedOutput()
 	if err != nil {
 		t.Fatalf("query: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), "stored in sqlx") || !strings.Contains(string(out), "4") {
+	if !strings.Contains(string(out), "1|stored in sqlx") {
 		t.Fatalf("query:\n%s", out)
 	}
 }
 
+// testDB points every path the store reads at a temp dir and returns the
+// crusade file, which is DatabasePath, so the one-time imports run on it.
 func testDB(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	t.Setenv("SQLX_ROOT", root)
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("SQLX_ROOT", filepath.Join(root, "sqlx"))
 	t.Setenv("BOXES_CONFIG", filepath.Join(root, "missing-outline.txt"))
+	t.Setenv("BOXES_DATA_HOME", filepath.Join(root, "boxes"))
 	return DatabasePath()
 }
 
@@ -154,16 +163,16 @@ func seedSQLiteFile(t *testing.T, path, sql string) string {
 	return path
 }
 
-func mustEvent(t *testing.T, date, outcome string) model.Event {
+func mustEvent(t *testing.T, date, outcome string) model.Align {
 	t.Helper()
-	event, err := model.NewEvent(date, outcome, "impact")
+	event, err := model.NewAlign(date, outcome, "impact")
 	if err != nil {
 		t.Fatal(err)
 	}
 	return event
 }
 
-func TestDoneColumnMigratesAndRoundTrips(t *testing.T) {
+func TestTaskTableWithoutDoneColumnsMigratesAndRoundTrips(t *testing.T) {
 	old := `CREATE TABLE task (
   id INTEGER PRIMARY KEY,
   mode TEXT NOT NULL,
@@ -175,130 +184,128 @@ func TestDoneColumnMigratesAndRoundTrips(t *testing.T) {
   r REAL
 );
 INSERT INTO task(id, mode, x, y) VALUES (1, 'do', '2026-06-13 23:59:59', 'kept task');
+INSERT INTO task(id, mode, x, y, z) VALUES (2, 'align', '2026-07-01 00:00:00', 'align mark', 'impact');
 `
 	path := seedSQLite(t, old)
 	if _, err := Open(path); err != nil {
 		t.Fatal(err)
 	}
+	list, err := LoadDoList(path)
+	if err != nil || len(list) != 1 || list[0].Kind != model.DoKindItem || list[0].Body != "kept task" {
+		t.Fatalf("do list = %#v err=%v", list, err)
+	}
 	records, err := Load(path)
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || len(records) != 1 || records[0].ID != 2 || records[0].Align.Done() {
+		t.Fatalf("records = %#v err=%v", records, err)
 	}
-	if len(records) != 1 || records[0].Event.Done || records[0].Event.Y != "kept task" || !records[0].Event.IsDo() {
-		t.Fatalf("migrated count=%d done=%v do=%v", len(records), len(records) == 1 && records[0].Event.Done, len(records) == 1 && records[0].Event.IsDo())
-	}
-	event := records[0].Event
-	event.Done = true
-	if err := Update(path, records[0].ID, event); err != nil {
+	event := records[0].Align
+	event.DoneAt = time.Date(2026, 7, 2, 6, 10, 0, 0, time.Local)
+	if err := Update(path, 2, event); err != nil {
 		t.Fatal(err)
 	}
 	records, err = Load(path)
-	if err != nil || len(records) != 1 || !records[0].Event.Done {
-		t.Fatalf("marked err=%v", err)
+	if err != nil || len(records) != 1 || !records[0].Align.Done() || !records[0].Align.DoneAt.Equal(event.DoneAt) {
+		t.Fatalf("marked = %#v err=%v", records, err)
 	}
-	event = records[0].Event
-	event.Done = false
-	if err := Update(path, records[0].ID, event); err != nil {
+	event.DoneAt = time.Time{}
+	if err := Update(path, 2, event); err != nil {
 		t.Fatal(err)
 	}
 	records, err = Load(path)
-	if err != nil || len(records) != 1 || records[0].Event.Done {
-		t.Fatalf("cleared err=%v", err)
-	}
-	align := mustEvent(t, "2026-07-01 00:00", "align mark")
-	align.Done = true
-	if err := Add(path, align); err != nil {
-		t.Fatal(err)
-	}
-	records, err = Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var found bool
-	for _, record := range records {
-		if record.Event.Y == "align mark" {
-			found = record.Event.Done && record.Event.Mode == model.ModeAlign
-		}
-	}
-	if !found {
-		t.Fatal("align done mark was not stored")
+	if err != nil || len(records) != 1 || records[0].Align.Done() {
+		t.Fatalf("cleared = %#v err=%v", records, err)
 	}
 }
 
-func TestDoneAtRoundTripsAndClears(t *testing.T) {
+func TestDoneAtRoundTripsInUTCAndClears(t *testing.T) {
 	path := testDB(t)
-	event, err := model.NewDoEvent("2026-10-22 23:59:59", "fold clothes")
-	if err != nil {
-		t.Fatal(err)
-	}
-	event.Done = true
+	event := mustEvent(t, "2026-10-22 00:00", "fold clothes")
 	event.DoneAt = time.Date(2026, 10, 30, 6, 10, 0, 0, time.Local)
-	if err := Add(path, event); err != nil {
-		t.Fatal(err)
-	}
-	records, err := Load(path)
+	id, err := AddRecord(path, event)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 1 || !records[0].Event.Done || !records[0].Event.DoneAt.Equal(event.DoneAt) {
-		t.Fatalf("done=%v at=%s", len(records) == 1 && records[0].Event.Done, records[0].Event.DoneAt)
+	var stored []struct {
+		DoneAt string `json:"done_at"`
 	}
-	cleared := records[0].Event
-	cleared.Done = false
-	cleared.DoneAt = event.DoneAt
-	if err := Update(path, records[0].ID, cleared); err != nil {
+	if err := sqlite.Query(path, "SELECT done_at FROM align", &stored); err != nil || len(stored) != 1 {
+		t.Fatalf("stored = %#v err=%v", stored, err)
+	}
+	if want := event.DoneAt.UTC().Format(model.DateTimeFormat); stored[0].DoneAt != want {
+		t.Fatalf("stored done_at = %q, want UTC %q", stored[0].DoneAt, want)
+	}
+	records, err := Load(path)
+	if err != nil || len(records) != 1 || !records[0].Align.Done() || !records[0].Align.DoneAt.Equal(event.DoneAt) {
+		t.Fatalf("loaded = %#v err=%v", records, err)
+	}
+	cleared := records[0].Align
+	cleared.DoneAt = time.Time{}
+	if err := Update(path, id, cleared); err != nil {
 		t.Fatal(err)
 	}
 	records, err = Load(path)
-	if err != nil || len(records) != 1 || records[0].Event.Done || !records[0].Event.DoneAt.IsZero() {
-		t.Fatalf("cleared done=%v at=%s err=%v", len(records) == 1 && records[0].Event.Done, records[0].Event.DoneAt, err)
+	if err != nil || len(records) != 1 || records[0].Align.Done() || !records[0].Align.DoneAt.IsZero() {
+		t.Fatalf("cleared = %#v err=%v", records, err)
 	}
 }
 
-func TestDeleteCountsDoTasksThisWeek(t *testing.T) {
+func TestDeleteCountsDoItemsThisWeek(t *testing.T) {
 	path := testDB(t)
-	doEvent, err := model.NewDoEvent("2026-10-22 23:59:59", "fold clothes")
+	itemID, err := AddDoItem(path, 0, "fold clothes")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Add(path, doEvent); err != nil {
+	alignID, err := AddRecord(path, mustEvent(t, "2026-06-01 00:00", "align outcome"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Add(path, mustEvent(t, "2026-06-01 00:00", "align outcome")); err != nil {
+	if err := Delete(path, alignID); err != nil {
 		t.Fatal(err)
 	}
-	if err := Delete(path, 2); err != nil {
-		t.Fatal(err)
-	}
-	count, err := DeletedThisWeek(path, time.Now())
-	if err != nil || count != 0 {
+	if count, err := DeletedThisWeek(path, time.Now()); err != nil || count != 0 {
 		t.Fatalf("align delete count=%d err=%v", count, err)
 	}
-	if err := Delete(path, 1); err != nil {
+	if err := DeleteDoItem(path, itemID); err != nil {
 		t.Fatal(err)
 	}
-	count, err = DeletedThisWeek(path, time.Now())
-	if err != nil || count != 1 {
+	if count, err := DeletedThisWeek(path, time.Now()); err != nil || count != 1 {
 		t.Fatalf("do delete count=%d err=%v", count, err)
 	}
-	if err := Delete(path, 1); err == nil || !strings.Contains(err.Error(), "not found") {
+	if err := DeleteDoItem(path, itemID); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("missing delete err=%v", err)
 	}
-	count, err = DeletedThisWeek(path, time.Now())
-	if err != nil || count != 1 {
+	if count, err := DeletedThisWeek(path, time.Now()); err != nil || count != 1 {
 		t.Fatalf("missing delete changed count=%d err=%v", count, err)
 	}
-	older := time.Now().AddDate(0, 0, -8).Format(model.DateTimeFormat)
+	older := time.Now().AddDate(0, 0, -8).UTC().Format(model.DateTimeFormat)
 	if err := execSQL(path, "INSERT INTO deletion(id, deleted_at) VALUES (50, '"+older+"');"); err != nil {
 		t.Fatal(err)
 	}
-	count, err = DeletedThisWeek(path, time.Now())
-	if err != nil || count != 1 {
+	if count, err := DeletedThisWeek(path, time.Now()); err != nil || count != 1 {
 		t.Fatalf("old deletion count=%d err=%v", count, err)
 	}
-	records, err := Load(path)
-	if err != nil || len(records) != 0 {
-		t.Fatalf("tasks left=%d err=%v", len(records), err)
+	list, err := LoadDoList(path)
+	if err != nil || len(list) != 0 {
+		t.Fatalf("do rows left=%d err=%v", len(list), err)
+	}
+}
+
+func TestDeletingAHeadingOrBlankIsNotCounted(t *testing.T) {
+	path := testDB(t)
+	if err := ReplaceDoList(path, model.ParseDoList("# Work\n\n- ship it\n")); err != nil {
+		t.Fatal(err)
+	}
+	list, err := LoadDoList(path)
+	if err != nil || len(list) != 3 {
+		t.Fatalf("list = %#v err=%v", list, err)
+	}
+	for _, row := range list[:2] {
+		if err := DeleteDoItem(path, row.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if count, err := DeletedThisWeek(path, time.Now()); err != nil || count != 0 {
+		t.Fatalf("heading and blank deletions counted=%d err=%v", count, err)
 	}
 }
 
@@ -330,7 +337,7 @@ INSERT INTO task(id, mode, x, y, z, p, q, r) VALUES
   (1, 'align', '2026-01-26 18:30:00', 'ship the patch', 'reduce drift', 7, 8, 6),
   (2, '', '2026-06-13 23:59:59', 'kept task', 'done', 0, 0, 0),
   (3, 'do', '2026-06-14 23:59:59', 'mail the letter', NULL, NULL, NULL, NULL),
-  (4, '', '2026-03-01 00:00:00', 'real outcome', 'done', 1, 0, 0);
+  (4, 'think', '2026-03-01 00:00:00', 'real outcome', 'clear head', 1, 0, 0);
 `
 	path := seedSQLite(t, old)
 	if _, err := Open(path); err != nil {
@@ -339,41 +346,28 @@ INSERT INTO task(id, mode, x, y, z, p, q, r) VALUES
 	var cols []struct {
 		Name string `json:"name"`
 	}
-	if err := queryJSON(path, "SELECT name FROM pragma_table_info('task') WHERE name = 'p'", &cols); err != nil {
-		t.Fatal(err)
-	}
-	if len(cols) != 0 {
-		t.Fatal("score column remains")
+	if err := sqlite.Query(path, "SELECT name FROM pragma_table_info('align') WHERE name IN ('p', 'mode')", &cols); err != nil || len(cols) != 0 {
+		t.Fatalf("old columns remain: %#v %v", cols, err)
 	}
 	var rows []struct {
-		ID   int     `json:"id"`
-		Mode string  `json:"mode"`
-		X    string  `json:"x"`
-		Z    *string `json:"z"`
+		ID int    `json:"id"`
+		X  string `json:"x"`
 	}
-	if err := queryJSON(path, "SELECT id, mode, x, z FROM task ORDER BY id", &rows); err != nil {
+	if err := sqlite.Query(path, "SELECT id, x FROM align ORDER BY id", &rows); err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 4 {
-		t.Fatalf("rows = %#v", rows)
+	if len(rows) != 2 || rows[0].ID != 1 || rows[0].X != "2026-01-26" || rows[1].ID != 4 || rows[1].X != "2026-03-01" {
+		t.Fatalf("align rows = %#v", rows)
 	}
-	if rows[0].Mode != "align" || rows[0].X != "2026-01-26" {
-		t.Fatalf("align row = %#v", rows[0])
-	}
-	if rows[1].Mode != "do" || rows[1].X != "2026-06-13 23:59:59" {
-		t.Fatalf("legacy do = %#v", rows[1])
-	}
-	if rows[2].Mode != "do" || rows[2].X != "2026-06-14 23:59:59" {
-		t.Fatalf("do row = %#v", rows[2])
-	}
-	if rows[3].Mode != "align" || rows[3].X != "2026-03-01" || rows[3].Z == nil || *rows[3].Z != "done" {
-		t.Fatalf("scored legacy = %#v", rows[3])
+	list, err := LoadDoList(path)
+	if err != nil || len(list) != 2 || list[0].Body != "kept task" || list[1].Body != "mail the letter" {
+		t.Fatalf("do list = %#v err=%v", list, err)
 	}
 	records, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 4 || records[0].Event.Y != "ship the patch" || records[1].Event.Y != "real outcome" || !records[1].Event.X.Equal(time.Date(2026, 3, 1, 0, 0, 0, 0, time.Local)) {
+	if len(records) != 2 || records[0].Align.Y != "ship the patch" || records[1].Align.Y != "real outcome" || !records[1].Align.X.Equal(time.Date(2026, 3, 1, 0, 0, 0, 0, time.Local)) {
 		t.Fatalf("loaded = %#v", records)
 	}
 }

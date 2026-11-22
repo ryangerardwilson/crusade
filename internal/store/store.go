@@ -3,234 +3,155 @@ package store
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ryangerardwilson/crusade/internal/model"
+	"github.com/ryangerardwilson/crusade/internal/sqlite"
 )
 
 const DatabaseName = "crusade"
 
 const legacyDatabaseName = "xecute"
 
-// taskModel holds align records and legacy do tasks. Null z is a do task with
-// no impact; null done_at is a task never marked done, or one done before
-// done_at existed.
-//
-// Architecture exception (gates §1.6, §1.7, §1.16): mode has no CHECK, done
-// and done_at can disagree, and x is a day for align but a date and time for
-// do. model.NewEvent, model.NewDoEvent, and stored() enforce these on every
-// write. Remove once a table-rebuild migration adds CHECK constraints and
-// splits do tasks from align records.
-const taskModel = "model task\n" +
-	"  id integer primary key\n" +
-	"  mode text not null\n" +
-	"  x text not null\n" +
-	"  y text not null\n" +
-	"  z text\n" +
-	"  done integer not null default 0\n" +
-	"  done_at text\n"
-
-const deletionModel = "model deletion\n" +
-	"  id integer primary key\n" +
-	"  deleted_at text not null\n"
-
-const dropTaskScoresSQL = `
-BEGIN IMMEDIATE;
-CREATE TABLE task_scoreless (
-  "id" INTEGER PRIMARY KEY,
-  "mode" TEXT NOT NULL,
-  "x" TEXT NOT NULL,
-  "y" TEXT NOT NULL,
-  "z" TEXT,
-  "done" INTEGER NOT NULL,
-  "done_at" TEXT
-);
-INSERT INTO task_scoreless(id, mode, x, y, z, done, done_at)
-SELECT
-  id,
-  CASE
-    WHEN TRIM(COALESCE(mode, '')) = '' AND z = 'done' AND COALESCE(p, 0) = 0 AND COALESCE(q, 0) = 0 AND COALESCE(r, 0) = 0 THEN 'do'
-    WHEN LOWER(TRIM(mode)) = 'think' THEN 'align'
-    WHEN TRIM(COALESCE(mode, '')) = '' THEN 'align'
-    ELSE mode
-  END,
-  CASE
-    WHEN NOT (TRIM(COALESCE(mode, '')) = '' AND z = 'done' AND COALESCE(p, 0) = 0 AND COALESCE(q, 0) = 0 AND COALESCE(r, 0) = 0)
-      AND LOWER(TRIM(COALESCE(mode, ''))) IN ('', 'align', 'think')
-    THEN substr(x, 1, 10)
-    ELSE x
-  END,
-  y,
-  CASE
-    WHEN TRIM(COALESCE(mode, '')) = '' AND z = 'done' AND COALESCE(p, 0) = 0 AND COALESCE(q, 0) = 0 AND COALESCE(r, 0) = 0 THEN NULL
-    ELSE z
-  END,
-  COALESCE(done, 0),
-  done_at
-FROM task;
-DROP TABLE task;
-ALTER TABLE task_scoreless RENAME TO task;
-COMMIT;
-`
-
-type Record struct {
+// AlignRecord is one stored align record.
+type AlignRecord struct {
 	ID    int
-	Event model.Event
+	Align model.Align
 }
 
-type taskRow struct {
+type alignRow struct {
 	ID     int     `json:"id"`
-	Mode   string  `json:"mode"`
 	X      string  `json:"x"`
 	Y      string  `json:"y"`
-	Z      *string `json:"z"`
-	Done   int     `json:"done"`
+	Z      string  `json:"z"`
 	DoneAt *string `json:"done_at"`
 }
 
 func DatabasePath() string {
-	return dbFile(DatabaseName)
+	return sqlite.File(DatabaseName)
 }
 
-// Open creates the crusade database when it is missing and imports the boxes
-// outline once. A later call leaves existing rows in place.
+// Open creates the crusade database when it is missing, migrates an older
+// one, and runs the one-time boxes and do list imports. It reports whether the
+// database was created.
 func Open(dbPath string) (bool, error) {
-	if err := adoptLegacyDatabase(dbPath); err != nil {
+	if err := sqlite.Adopt(filepath.Dir(dbPath), legacyDatabaseName, dbPath); err != nil {
 		return false, err
 	}
-	existed, err := databaseListed(DatabaseName)
+	existed, err := databaseListed(dbPath)
 	if err != nil {
 		return false, err
 	}
-	if err := ensure(dbPath); err != nil {
-		if !existed {
-			_ = os.Remove(dbPath)
+	steps := []func(string) error{ensure, importBoxesOnce, importDoOnce}
+	for _, step := range steps {
+		if err := step(dbPath); err != nil {
+			if !existed {
+				_ = os.Remove(dbPath)
+			}
+			return false, err
 		}
-		return false, err
-	}
-	if err := importBoxesOnce(dbPath); err != nil {
-		if !existed {
-			_ = os.Remove(dbPath)
-		}
-		return false, err
 	}
 	return !existed, nil
 }
 
-func Load(dbPath string) ([]Record, error) {
+func ensure(dbPath string) error {
+	return sqlite.Prepare(dbPath, crusadeSchema())
+}
+
+// databaseListed reports that dbPath already holds crusade tables.
+func databaseListed(dbPath string) (bool, error) {
+	if _, err := os.Stat(dbPath); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	var rows []struct {
+		N int `json:"n"`
+	}
+	if err := sqlite.Query(dbPath, "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN ('install', 'task')", &rows); err != nil {
+		return false, err
+	}
+	return len(rows) > 0 && rows[0].N > 0, nil
+}
+
+// Load reads the align records in day order.
+func Load(dbPath string) ([]AlignRecord, error) {
 	if err := ensure(dbPath); err != nil {
 		return nil, err
 	}
-	var rows []taskRow
-	if err := queryJSON(dbPath, "SELECT id, mode, x, y, z, done, done_at FROM task", &rows); err != nil {
-		return nil, fmt.Errorf("failed to read tasks from %s: %w", dbPath, err)
+	var rows []alignRow
+	if err := sqlite.Query(dbPath, "SELECT id, x, y, z, done_at FROM align", &rows); err != nil {
+		return nil, fmt.Errorf("failed to read align records from %s: %w", dbPath, err)
 	}
-	records := make([]Record, 0, len(rows))
-	seen := make(map[int]bool, len(rows))
+	records := make([]AlignRecord, 0, len(rows))
 	for _, row := range rows {
-		if row.ID <= 0 {
-			return nil, fmt.Errorf("failed to read tasks from %s: task has invalid id", dbPath)
-		}
-		if seen[row.ID] {
-			return nil, fmt.Errorf("failed to read tasks from %s: duplicate task id %d", dbPath, row.ID)
-		}
-		seen[row.ID] = true
 		event, err := eventFromRow(row)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read tasks from %s: task id %d: %w", dbPath, row.ID, err)
+			return nil, fmt.Errorf("failed to read align records from %s: id %d: %w", dbPath, row.ID, err)
 		}
-		records = append(records, Record{ID: row.ID, Event: event})
+		records = append(records, AlignRecord{ID: row.ID, Align: event})
 	}
 	sortRecords(records)
 	return records, nil
 }
 
-func Save(dbPath string, records []Record) error {
-	if err := ensure(dbPath); err != nil {
-		return err
-	}
-	normalized, err := normalizeRecords(records)
-	if err != nil {
-		return err
-	}
-	var b strings.Builder
-	b.WriteString("BEGIN IMMEDIATE;\nDELETE FROM task;\n")
-	if len(normalized) > 0 {
-		b.WriteString("INSERT INTO task(id, mode, x, y, z, done, done_at) VALUES\n")
-		for index, record := range normalized {
-			if index > 0 {
-				b.WriteString(",\n")
-			}
-			b.WriteString(rowSQL(record))
-		}
-		b.WriteString(";\n")
-	}
-	b.WriteString("COMMIT;\n")
-	return execSQL(dbPath, b.String())
-}
-
-func Add(dbPath string, event model.Event) error {
+func Add(dbPath string, event model.Align) error {
 	_, err := AddRecord(dbPath, event)
 	return err
 }
 
-func AddRecord(dbPath string, event model.Event) (int, error) {
+// AddRecord stores a new align record and returns its id.
+func AddRecord(dbPath string, event model.Align) (int, error) {
 	if err := ensure(dbPath); err != nil {
 		return 0, err
 	}
-	id, err := nextID(dbPath)
+	event, err := stored(event)
 	if err != nil {
 		return 0, err
 	}
-	record, err := stored(Record{ID: id, Event: event})
-	if err != nil {
+	var rows []struct {
+		ID int `json:"id"`
+	}
+	sql := fmt.Sprintf("INSERT INTO align(x, y, z, done_at) VALUES (%s) RETURNING id;\n", alignValuesSQL(event))
+	if err := sqlite.Query(dbPath, sql, &rows); err != nil {
 		return 0, err
 	}
-	if err := execSQL(dbPath, "INSERT INTO task(id, mode, x, y, z, done, done_at) VALUES "+rowSQL(record)+";\n"); err != nil {
-		return 0, err
+	if len(rows) == 0 {
+		return 0, fmt.Errorf("%s: sqlite returned no id", dbPath)
 	}
-	return id, nil
+	published(dbPath)
+	return rows[0].ID, nil
 }
 
-func Update(dbPath string, id int, event model.Event) error {
+// Update replaces the align record id.
+func Update(dbPath string, id int, event model.Align) error {
 	if err := ensure(dbPath); err != nil {
 		return err
 	}
-	record, err := stored(Record{ID: id, Event: event})
+	event, err := stored(event)
 	if err != nil {
 		return err
 	}
-	changed, err := rowsChanged(dbPath, "UPDATE task SET "+rowAssignments(record)+" WHERE id = "+strconv.Itoa(id)+";\n")
-	if err != nil {
-		return err
-	}
-	if !changed {
-		return fmt.Errorf("ID %d not found", id)
-	}
-	return nil
+	sql := fmt.Sprintf("UPDATE align SET x = %s, y = %s, z = %s, done_at = %s WHERE id = %d;\n",
+		sqlite.Quote(event.X.Format(time.DateOnly)), sqlite.Quote(event.Y), sqlite.Quote(event.Z), doneAtSQL(event), id)
+	return changeOne(dbPath, sql, id)
 }
 
+// Delete removes the align record id.
 func Delete(dbPath string, id int) error {
 	if err := ensure(dbPath); err != nil {
 		return err
 	}
-	record, found, err := taskByID(dbPath, id)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return fmt.Errorf("ID %d not found", id)
-	}
-	var b strings.Builder
-	b.WriteString("BEGIN IMMEDIATE;\n")
-	if record.Event.IsDo() {
-		fmt.Fprintf(&b, "INSERT INTO deletion(id, deleted_at) SELECT COALESCE((SELECT MAX(id) FROM deletion), 0) + 1, %s WHERE EXISTS (SELECT 1 FROM task WHERE id = %d);\n", sqlString(time.Now().Format(model.DateTimeFormat)), id)
-	}
-	fmt.Fprintf(&b, "DELETE FROM task WHERE id = %d;\nCOMMIT;\n", id)
-	changed, err := rowsChanged(dbPath, b.String())
+	return changeOne(dbPath, "DELETE FROM align WHERE id = "+strconv.Itoa(id)+";\n", id)
+}
+
+func changeOne(dbPath, sql string, id int) error {
+	changed, err := rowsChanged(dbPath, sql)
 	if err != nil {
 		return err
 	}
@@ -240,33 +161,14 @@ func Delete(dbPath string, id int) error {
 	return nil
 }
 
-func taskByID(dbPath string, id int) (Record, bool, error) {
-	var rows []taskRow
-	query := "SELECT id, mode, x, y, z, done, done_at FROM task WHERE id = " + strconv.Itoa(id)
-	if err := queryJSON(dbPath, query, &rows); err != nil {
-		return Record{}, false, err
-	}
-	if len(rows) == 0 {
-		return Record{}, false, nil
-	}
-	event, err := eventFromRow(rows[0])
-	if err != nil {
-		return Record{}, false, err
-	}
-	return Record{ID: rows[0].ID, Event: event}, true, nil
-}
-
-// DeletedThisWeek counts do tasks deleted during the Monday-Sunday week that contains now.
+// DeletedThisWeek counts do items deleted during the Monday-Sunday week that contains now.
 func DeletedThisWeek(dbPath string, now time.Time) (int, error) {
 	if strings.TrimSpace(dbPath) == "" {
 		return 0, nil
 	}
-	exists, err := databaseListed(DatabaseName)
-	if err != nil {
+	exists, err := databaseListed(dbPath)
+	if err != nil || !exists {
 		return 0, err
-	}
-	if !exists {
-		return 0, nil
 	}
 	if err := ensure(dbPath); err != nil {
 		return 0, err
@@ -274,12 +176,12 @@ func DeletedThisWeek(dbPath string, now time.Time) (int, error) {
 	var rows []struct {
 		DeletedAt string `json:"deleted_at"`
 	}
-	if err := queryJSON(dbPath, "SELECT deleted_at FROM deletion", &rows); err != nil {
+	if err := sqlite.Query(dbPath, "SELECT deleted_at FROM deletion", &rows); err != nil {
 		return 0, err
 	}
 	stamps := make([]time.Time, 0, len(rows))
 	for _, row := range rows {
-		stamp, err := model.ParseDateTime(row.DeletedAt)
+		stamp, err := parseInstant(row.DeletedAt)
 		if err != nil {
 			continue
 		}
@@ -310,221 +212,102 @@ func weekStart(now time.Time) time.Time {
 	return day.AddDate(0, 0, -offset)
 }
 
-func ensure(dbPath string) error {
-	if err := prepareAppDB(dbPath, DatabaseName, ormText()); err != nil {
-		return err
+// LastMode is the mode the next launch opens.
+func LastMode(dbPath string) (string, error) {
+	if err := ensure(dbPath); err != nil {
+		return "", err
 	}
-	return migrateLegacyTask(dbPath)
-}
-
-func migrateLegacyTask(dbPath string) error {
-	cols, err := tableColumns(dbPath, "task")
-	if err != nil {
-		return err
-	}
-	if !cols["p"] {
-		return nil
-	}
-	if !cols["done"] {
-		if err := runOnce(dbPath, "task_done", "ALTER TABLE task ADD COLUMN done INTEGER NOT NULL DEFAULT 0"); err != nil {
-			return err
-		}
-	}
-	if !cols["done_at"] {
-		if err := runOnce(dbPath, "task_done_at", "ALTER TABLE task ADD COLUMN done_at TEXT"); err != nil {
-			return err
-		}
-	}
-	return runOnce(dbPath, "task_drop_scores", dropTaskScoresSQL)
-}
-
-func databaseListed(name string) (bool, error) {
-	path := dbFile(name)
-	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	cols, err := tableColumns(path, "task")
-	if err != nil {
-		return false, err
-	}
-	return len(cols) > 0, nil
-}
-
-func normalizeRecords(records []Record) ([]Record, error) {
-	normalized := append([]Record(nil), records...)
-	seen := make(map[int]bool, len(normalized))
-	next := nextSliceID(normalized)
-	for index := range normalized {
-		record, err := stored(normalized[index])
-		if err != nil {
-			return nil, err
-		}
-		if record.ID <= 0 {
-			record.ID = next
-			next++
-		}
-		if seen[record.ID] {
-			return nil, fmt.Errorf("duplicate task id %d", record.ID)
-		}
-		seen[record.ID] = true
-		normalized[index] = record
-	}
-	sortRecords(normalized)
-	return normalized, nil
-}
-
-func stored(record Record) (Record, error) {
-	event := record.Event
-	var err error
-	done := event.Done
-	doneAt := event.DoneAt
-	if event.IsDo() {
-		event, err = model.NewDoEvent(event.X.Format(model.DateTimeFormat), event.Y)
-	} else if event.Mode == "" || event.Mode == model.ModeAlign {
-		event, err = model.NewEvent(event.X.Format("2006-01-02"), event.Y, event.Z)
-	} else {
-		return Record{}, fmt.Errorf("unknown mode %q", event.Mode)
-	}
-	if err != nil {
-		return Record{}, err
-	}
-	event.Done = done
-	if done {
-		event.DoneAt = doneAt
-	}
-	record.Event = event
-	return record, nil
-}
-
-func nextID(dbPath string) (int, error) {
 	var rows []struct {
-		N int `json:"n"`
+		Mode string `json:"last_mode"`
 	}
-	if err := queryJSON(dbPath, "SELECT COALESCE(MAX(id), 0) AS n FROM task", &rows); err != nil {
-		return 0, err
+	if err := sqlite.Query(dbPath, "SELECT last_mode FROM install WHERE id = 1", &rows); err != nil {
+		return "", err
 	}
 	if len(rows) == 0 {
-		return 1, nil
+		return model.ModeDo, nil
 	}
-	return rows[0].N + 1, nil
+	return rows[0].Mode, nil
 }
 
-func nextSliceID(records []Record) int {
-	maximum := 0
-	for _, record := range records {
-		if record.ID > maximum {
-			maximum = record.ID
-		}
+// SaveLastMode stores the mode the next launch opens.
+func SaveLastMode(dbPath, mode string) error {
+	if !knownMode(mode) {
+		return fmt.Errorf("unknown mode %s", mode)
 	}
-	return maximum + 1
+	if err := ensure(dbPath); err != nil {
+		return err
+	}
+	return execSQL(dbPath, "UPDATE install SET last_mode = "+sqlite.Quote(mode)+" WHERE id = 1;\n")
 }
 
-func sortRecords(records []Record) {
+func knownMode(mode string) bool {
+	switch mode {
+	case model.ModeDo, model.ModeAlign, model.ModeBox, model.ModeCal, model.ModeNLP:
+		return true
+	default:
+		return false
+	}
+}
+
+func stored(event model.Align) (model.Align, error) {
+	next, err := model.NewAlign(event.X.Format(time.DateOnly), event.Y, event.Z)
+	if err != nil {
+		return model.Align{}, err
+	}
+	next.DoneAt = event.DoneAt
+	return next, nil
+}
+
+func sortRecords(records []AlignRecord) {
 	sort.SliceStable(records, func(i, j int) bool {
-		if model.Less(records[i].Event, records[j].Event) {
+		if model.Less(records[i].Align, records[j].Align) {
 			return true
 		}
-		if model.Less(records[j].Event, records[i].Event) {
+		if model.Less(records[j].Align, records[i].Align) {
 			return false
 		}
 		return records[i].ID < records[j].ID
 	})
 }
 
-func eventFromRow(row taskRow) (model.Event, error) {
-	var event model.Event
-	var err error
-	switch strings.ToLower(strings.TrimSpace(row.Mode)) {
-	case model.ModeDo:
-		event, err = model.NewDoEvent(row.X, row.Y)
-	case "", model.ModeAlign, "think":
-		z := ""
-		if row.Z != nil {
-			z = *row.Z
-		}
-		if strings.TrimSpace(row.Mode) == "" && z == "done" {
-			event, err = model.NewDoEvent(row.X, row.Y)
-			break
-		}
-		event, err = model.NewEvent(row.X, row.Y, z)
-	default:
-		return model.Event{}, fmt.Errorf("unknown mode %q", row.Mode)
-	}
+func eventFromRow(row alignRow) (model.Align, error) {
+	event, err := model.NewAlign(row.X, row.Y, row.Z)
 	if err != nil {
-		return model.Event{}, err
+		return model.Align{}, err
 	}
-	event.Done = row.Done != 0
-	if event.Done && row.DoneAt != nil && strings.TrimSpace(*row.DoneAt) != "" {
-		stamp, stampErr := model.ParseDateTime(*row.DoneAt)
-		if stampErr != nil {
-			return model.Event{}, stampErr
+	if row.DoneAt != nil {
+		stamp, err := parseInstant(*row.DoneAt)
+		if err != nil {
+			return model.Align{}, err
 		}
 		event.DoneAt = stamp
 	}
 	return event, nil
 }
 
-func rowSQL(record Record) string {
-	event := record.Event
-	outcome := sqlString(event.Y)
-	if event.IsDo() {
-		when := sqlString(event.X.Format(model.DateTimeFormat))
-		return fmt.Sprintf("(%d, %s, %s, %s, NULL, %d, %s)", record.ID, sqlString(model.ModeDo), when, outcome, doneBit(event.Done), doneAtSQL(event))
-	}
-	when := sqlString(event.X.Format("2006-01-02"))
-	return fmt.Sprintf("(%d, %s, %s, %s, %s, %d, %s)",
-		record.ID,
-		sqlString(model.ModeAlign),
-		when,
-		outcome,
-		sqlString(event.Z),
-		doneBit(event.Done),
-		doneAtSQL(event),
-	)
+func alignValuesSQL(event model.Align) string {
+	return strings.Join([]string{sqlite.Quote(event.X.Format(time.DateOnly)), sqlite.Quote(event.Y), sqlite.Quote(event.Z), doneAtSQL(event)}, ", ")
 }
 
-func rowAssignments(record Record) string {
-	event := record.Event
-	outcome := sqlString(event.Y)
-	if event.IsDo() {
-		when := sqlString(event.X.Format(model.DateTimeFormat))
-		return "mode = " + sqlString(model.ModeDo) + ", x = " + when + ", y = " + outcome + ", z = NULL, done = " + doneSQL(event.Done) + ", done_at = " + doneAtSQL(event)
-	}
-	when := sqlString(event.X.Format("2006-01-02"))
-	return "mode = " + sqlString(model.ModeAlign) +
-		", x = " + when +
-		", y = " + outcome +
-		", z = " + sqlString(event.Z) +
-		", done = " + doneSQL(event.Done) +
-		", done_at = " + doneAtSQL(event)
-}
-
-func doneBit(done bool) int {
-	if done {
-		return 1
-	}
-	return 0
-}
-
-func doneSQL(done bool) string {
-	if done {
-		return "1"
-	}
-	return "0"
-}
-
-func doneAtSQL(event model.Event) string {
-	if !event.Done || event.DoneAt.IsZero() {
+func doneAtSQL(event model.Align) string {
+	if !event.Done() {
 		return "NULL"
 	}
-	return sqlString(event.DoneAt.Format(model.DateTimeFormat))
+	return instantSQL(event.DoneAt)
 }
 
-func sqlString(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+// instantSQL stores a moment in UTC. Calendar clocks are not instants: they
+// stay local wall time.
+func instantSQL(at time.Time) string {
+	return sqlite.Quote(at.UTC().Format(model.DateTimeFormat))
+}
+
+func parseInstant(raw string) (time.Time, error) {
+	at, err := time.ParseInLocation(model.DateTimeFormat, raw, time.UTC)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return at.Local(), nil
 }
 
 func plainURL(value *string) string {
@@ -535,52 +318,38 @@ func plainURL(value *string) string {
 }
 
 func storedURL(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "NULL"
-	}
-	return sqlString(value)
-}
-
-func storedChangeURL(change RepeatChange) string {
-	if !change.HasURL {
-		return "NULL"
-	}
-	return sqlString(strings.TrimSpace(change.URL))
+	return sqlite.Text(strings.TrimSpace(value))
 }
 
 func rowsChanged(dbPath, sql string) (bool, error) {
-	var rows []struct {
-		N int `json:"n"`
+	changed, err := sqlite.Changed(dbPath, sql)
+	if err == nil && changed {
+		published(dbPath)
 	}
-	if err := queryJSON(dbPath, sql+"SELECT changes() AS n;", &rows); err != nil {
-		return false, err
-	}
-	if len(rows) == 0 {
-		return false, fmt.Errorf("%s: sqlite returned no changes count", dbPath)
-	}
-	return rows[0].N > 0, nil
+	return changed, err
 }
 
-func queryJSON(dbPath, sql string, dest any) error {
-	return sqliteQueryJSON(dbPath, sql, dest)
-}
-
-// execSQL writes the app sqlite. An empty task table is the damaged local
-// copy, so that file is not published.
+// execSQL writes the app sqlite and backs it up.
 func execSQL(dbPath, sql string) error {
-	if err := sqliteExec(dbPath, sql); err != nil {
+	if err := sqlite.Exec(dbPath, sql); err != nil {
 		return err
 	}
+	published(dbPath)
+	return nil
+}
+
+// published backs the file up unless it holds no records. An empty file is
+// the damaged local copy, so it is not published.
+func published(dbPath string) {
 	if os.Getenv("SQLX_ROOT") != "" {
-		return nil
+		return
 	}
 	var rows []struct {
 		N int `json:"n"`
 	}
-	if err := sqliteQueryJSON(dbPath, "SELECT COUNT(*) AS n FROM task", &rows); err != nil || len(rows) == 0 || rows[0].N == 0 {
-		return nil
+	sql := "SELECT (SELECT COUNT(*) FROM align) + (SELECT COUNT(*) FROM do_item) + (SELECT COUNT(*) FROM box) + (SELECT COUNT(*) FROM block) + (SELECT COUNT(*) FROM repeat) AS n"
+	if err := sqlite.Query(dbPath, sql, &rows); err != nil || len(rows) == 0 || rows[0].N == 0 {
+		return
 	}
-	publishObject(dbPath, DatabaseName)
-	return nil
+	sqlite.Publish(dbPath, DatabaseName)
 }

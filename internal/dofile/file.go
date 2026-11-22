@@ -4,73 +4,45 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/ryangerardwilson/crusade/internal/config"
+	"github.com/ryangerardwilson/crusade/internal/model"
 	"github.com/ryangerardwilson/crusade/internal/store"
 )
 
-// Path is the freeform do list beside the crusade config file.
+// Path is the Vim buffer of the do list.
 func Path() string {
-	return filepath.Join(filepath.Dir(config.Path()), "do")
+	return config.DoPath()
 }
 
-// Ensure creates the list from current do outcomes when the file is missing.
-// An existing file is left untouched.
-//
-// Architecture exception (gates §1.3, §2.2, §2.5, §2.12): after this seed the
-// file owns the do list, but the crusade do CLI still writes do rows to the
-// task table, so a do outcome can live in both places with no sync. The seed
-// runs once and nothing here writes rows. Remove once the do CLI edits this
-// file or the file is dropped for the rows.
-func Ensure(dataPath string) error {
+// Open edits the do list in Vim. The do_item rows are the list. The file is
+// derived from them: it is written fresh from the rows for each session, and
+// read back only as what Vim saved, which then replaces the rows in one
+// transaction. A failed Vim leaves the rows as they were.
+func Open(dataPath string) error {
 	if err := config.Ensure(); err != nil {
+		return err
+	}
+	rows, err := store.LoadDoList(dataPath)
+	if err != nil {
 		return err
 	}
 	path := Path()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	if _, err := os.Stat(path); err == nil {
-		return nil
-	} else if !os.IsNotExist(err) {
+	// Derived from do_item; regenerated on every open.
+	if err := os.WriteFile(path, []byte(model.RenderDoList(rows)), 0o644); err != nil {
 		return err
 	}
-	body, err := seedText(dataPath)
+	if err := runEditor(path); err != nil {
+		return err
+	}
+	saved, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(body), 0o644)
-}
-
-func seedText(dataPath string) (string, error) {
-	records, err := store.Load(dataPath)
-	if err != nil {
-		return "", err
-	}
-	lines := make([]string, 0, len(records))
-	for _, record := range records {
-		if !record.Event.IsDo() {
-			continue
-		}
-		text := strings.Join(strings.Fields(record.Event.Y), " ")
-		if text == "" {
-			continue
-		}
-		lines = append(lines, text)
-	}
-	if len(lines) == 0 {
-		return "", nil
-	}
-	return strings.Join(lines, "\n") + "\n", nil
-}
-
-// Open ensures the list and edits it with vim.
-func Open(dataPath string) error {
-	if err := Ensure(dataPath); err != nil {
-		return err
-	}
-	return runEditor(Path())
+	return store.ReplaceDoList(dataPath, model.ParseDoList(string(saved)))
 }
 
 func runEditor(path string) error {

@@ -43,24 +43,19 @@ var openNLPModel = func() (tea.Model, error) {
 	return nlp.Open(version.Version)
 }
 
-func runNLP(dataPath string, stdout, stderr io.Writer) int {
+func runNLP(dataPath string, stdout, stderr io.Writer) Result {
 	rememberMode(dataPath, model.ModeNLP)
 	if !stdoutIsTerm(stdout) {
 		fmt.Fprint(stdout, nlpHelp)
-		return 0
+		return Result{}
 	}
 	inner, err := openNLPModel()
 	if err != nil {
 		fmt.Fprintln(stderr, err.Error())
-		return 1
+		return Result{Code: 1}
 	}
 	app := nlpMode{dataPath: dataPath, inner: inner, width: 80, height: 24}
-	program := tea.NewProgram(app, tea.WithAltScreen())
-	if _, err := program.Run(); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	return 0
+	return runProgram(app, stderr)
 }
 
 type nlpMode struct {
@@ -137,11 +132,9 @@ func (m nlpMode) cycleMode() (tea.Model, tea.Cmd) {
 	next.width = m.width
 	next.height = m.height
 	next.memory = mem
-	next.mode = modeAlign
 	next.pendingDelete = false
 	if mem.hasAlign {
 		next.restoreSession(mem.align)
-		next.view = viewAgenda
 	}
 	next.clampState()
 	rememberMode(m.dataPath, model.ModeAlign)

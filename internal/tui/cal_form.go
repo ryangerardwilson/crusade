@@ -413,232 +413,60 @@ func (m calModel) choiceShown(label string, active bool) string {
 }
 
 func (m *calModel) commitForm() {
-	title := strings.TrimSpace(m.composeText)
-	if title == "" {
-		m.fail(fmt.Errorf("a block needs a title"))
-		return
-	}
-	start, end, err := m.formTimes()
+	form, err := m.collectForm()
 	if err != nil {
 		m.fail(err)
 		return
 	}
-	freq, freqErr := m.chosenFreq()
-	if freqErr != nil {
-		m.fail(freqErr)
-		return
+	target := store.FormTarget{Day: m.day}
+	if m.formEditing {
+		target = store.FormTarget{BlockID: m.targetBlockID, RepeatID: m.targetRepeatID, Day: m.targetDay}
 	}
-	url := strings.TrimSpace(m.formURL)
-	if !m.formEditing {
-		m.commitNewForm(title, start, end, freq, url)
-		return
-	}
-	if m.targetRepeatID == 0 {
-		m.commitOneOffForm(title, start, end, freq, url)
-		return
-	}
-	m.commitRepeatForm(title, start, end, freq, url)
+	saved, err := store.SaveForm(m.dataPath, target, form)
+	m.finish(savedStatus(saved, target, form.Scope), err, calPick{blockID: saved.BlockID, repeatID: saved.RepeatID})
 }
 
-func (m calModel) formTimes() (time.Time, time.Time, error) {
-	day := m.day
-	if m.formEditing {
-		day = m.targetDay
+// collectForm reads what the form holds. The store decides what it changes.
+func (m calModel) collectForm() (model.CalForm, error) {
+	title := strings.TrimSpace(m.composeText)
+	if title == "" {
+		return model.CalForm{}, fmt.Errorf("a block needs a title")
 	}
 	startHour, startMinute, startOK := parseClock(strings.TrimSpace(m.formStart))
 	endHour, endMinute, endOK := parseClock(strings.TrimSpace(m.formEnd))
 	if !startOK || !endOK {
-		return time.Time{}, time.Time{}, fmt.Errorf("a block needs a start and an end")
+		return model.CalForm{}, fmt.Errorf("a block needs a start and an end")
 	}
-	if (startMinute != 0 || endMinute != 0) && !m.keepsFormClock(startHour, startMinute, endHour, endMinute) {
-		return time.Time{}, time.Time{}, fmt.Errorf("a block starts and ends on the hour")
-	}
-	start := clockOn(day, startHour, startMinute)
-	end := clockOn(day, endHour, endMinute)
-	if !end.After(start) && endHour == 0 {
-		end = end.AddDate(0, 0, 1)
-	}
-	return start, end, nil
-}
-
-func (m calModel) keepsFormClock(startHour, startMinute, endHour, endMinute int) bool {
-	if !m.formEditing {
-		return false
-	}
-	return m.targetStart.Hour() == startHour && m.targetStart.Minute() == startMinute && m.targetEnd.Hour() == endHour && m.targetEnd.Minute() == endMinute
-}
-
-func (m *calModel) commitNewForm(title string, start, end time.Time, freq, url string) {
-	if freq == "" {
-		block, err := model.NewBlock(title, start.Format(model.DateTimeFormat), end.Format(model.DateTimeFormat))
-		if err != nil {
-			m.fail(err)
-			return
-		}
-		block.URL = url
-		id, err := store.AddBlock(m.dataPath, block)
-		m.finish("Blocked "+block.Title+".", err, calPick{blockID: id})
-		return
-	}
-	repeat, err := model.NewRepeat(title, start.Format(model.DateTimeFormat), end.Format(model.DateTimeFormat), freq)
+	freq, err := m.chosenFreq()
 	if err != nil {
-		m.fail(err)
-		return
+		return model.CalForm{}, err
 	}
-	repeat.URL = url
-	id, err := store.AddRepeat(m.dataPath, repeat)
-	m.finish(fmt.Sprintf("Repeats %s %s.", repeat.Title, model.FreqLabel(repeat.Freq)), err, calPick{repeatID: id})
+	return model.CalForm{
+		Title:       title,
+		StartHour:   startHour,
+		StartMinute: startMinute,
+		EndHour:     endHour,
+		EndMinute:   endMinute,
+		Freq:        freq,
+		URL:         strings.TrimSpace(m.formURL),
+		Scope:       model.Scope(m.formApply),
+	}, nil
 }
 
-func (m *calModel) commitOneOffForm(title string, start, end time.Time, freq, url string) {
-	if freq != "" {
-		repeat, err := model.NewRepeat(title, start.Format(model.DateTimeFormat), end.Format(model.DateTimeFormat), freq)
-		if err != nil {
-			m.fail(err)
-			return
-		}
-		repeat.URL = url
-		id, err := store.MakeRepeatFromBlock(m.dataPath, m.targetBlockID, repeat)
-		m.finish(fmt.Sprintf("Repeats %s %s.", repeat.Title, model.FreqLabel(repeat.Freq)), err, calPick{repeatID: id})
-		return
+// savedStatus is the status line of a form save.
+func savedStatus(saved store.Saved, target store.FormTarget, scope model.Scope) string {
+	switch saved.Change {
+	case model.ChangeBlocked:
+		return "Blocked " + saved.Title + "."
+	case model.ChangeRepeats:
+		return fmt.Sprintf("Repeats %s %s.", saved.Title, model.FreqLabel(saved.Freq))
 	}
-	block, err := model.NewBlock(title, start.Format(model.DateTimeFormat), end.Format(model.DateTimeFormat))
-	if err != nil {
-		m.fail(err)
-		return
+	if target.RepeatID == 0 {
+		return map[model.CalChange]string{model.ChangeSaved: "Saved ", model.ChangeRenamed: "Renamed ", model.ChangeRescheduled: "Rescheduled "}[saved.Change] + saved.Title + "."
 	}
-	block.URL = url
-	err = store.UpdateBlock(m.dataPath, m.targetBlockID, block)
-	status := "Saved " + block.Title + "."
-	if !start.Equal(m.targetStart) || !end.Equal(m.targetEnd) {
-		status = "Rescheduled " + block.Title + "."
-	} else if title != m.targetTitle {
-		status = "Renamed " + block.Title + "."
+	if saved.Change == model.ChangeLink {
+		return "Saved the meeting link."
 	}
-	m.finish(status, err, calPick{blockID: m.targetBlockID})
-}
-
-func (m *calModel) commitRepeatForm(title string, start, end time.Time, freq, url string) {
-	choice := []string{"o", "f", "a"}[m.formApply]
-	titleChanged := title != m.targetTitle
-	timesChanged := !start.Equal(m.targetStart) || !end.Equal(m.targetEnd)
-	freqChanged := freq != m.targetFreq
-	urlChanged := url != m.targetURL
-	if choice == "o" && freqChanged {
-		m.fail(fmt.Errorf("a repeat change applies to this and following, or to all events"))
-		return
-	}
-	switch choice {
-	case "o":
-		m.commitThisRepeat(title, start, end, url, titleChanged, timesChanged)
-	case "f":
-		m.commitFollowingRepeat(title, start, end, freq, url, titleChanged, timesChanged, freqChanged, urlChanged)
-	default:
-		m.commitAllRepeats(title, start, end, freq, url, titleChanged, timesChanged, freqChanged, urlChanged)
-	}
-}
-
-// Architecture exception (gates §3.7): the repeat commits below decide from the
-// form which clock a this-and-following or all-events edit keeps and whether
-// rescheduling drops renamed days. Each decision then lands as one store call
-// that writes in one transaction. Remove once a cal domain package owns these
-// rules and the form only passes what changed.
-func (m *calModel) commitThisRepeat(title string, start, end time.Time, url string, titleChanged, timesChanged bool) {
-	urlChanged := url != m.targetURL
-	if urlChanged && !titleChanged && !timesChanged {
-		err := store.ApplyRepeatURL(m.dataPath, m.targetRepeatID, url)
-		m.finish("Saved the meeting link.", err, calPick{repeatID: m.targetRepeatID})
-		return
-	}
-	override := store.OverrideRepeatDay
-	if urlChanged {
-		override = store.OverrideRepeatDayAndURL
-	}
-	err := override(m.dataPath, m.targetRepeatID, m.targetDay, title, start, end, url)
-	status := "Saved this event."
-	if titleChanged && !timesChanged {
-		status = "Renamed this event."
-	} else if timesChanged && !titleChanged {
-		status = "Rescheduled this event."
-	} else if urlChanged {
-		status = "Saved the meeting link."
-	}
-	m.finish(status, err, calPick{repeatID: m.targetRepeatID})
-}
-
-func (m *calModel) commitFollowingRepeat(title string, start, end time.Time, freq, url string, titleChanged, timesChanged, freqChanged, urlChanged bool) {
-	name := m.targetSeriesTitle
-	if titleChanged {
-		name = title
-	}
-	clockStart, clockEnd, useFreq := start, end, freq
-	clear := timesChanged || freqChanged
-	if !clear {
-		clockStart = clockFrom(m.targetDay, m.targetSeriesStart)
-		clockEnd = clockEndFrom(m.targetDay, m.targetSeriesEnd)
-		useFreq = m.targetFreq
-	}
-	next, err := model.NewRepeat(name, clockStart.Format(model.DateTimeFormat), clockEnd.Format(model.DateTimeFormat), useFreq)
-	if err != nil {
-		m.fail(err)
-		return
-	}
-	next.URL = m.seriesURL(urlChanged, url)
-	id, err := store.ContinueRepeat(m.dataPath, m.targetRepeatID, m.targetDay, next, clear, urlChanged)
-	if err != nil {
-		m.fail(err)
-		return
-	}
-	status := "Saved this and following."
-	if titleChanged && !clear {
-		status = "Renamed this and following."
-	} else if !titleChanged && clear {
-		status = "Rescheduled this and following."
-	}
-	m.finish(status, nil, calPick{repeatID: id})
-}
-
-func (m *calModel) commitAllRepeats(title string, start, end time.Time, freq, url string, titleChanged, timesChanged, freqChanged, urlChanged bool) {
-	if !timesChanged && !freqChanged {
-		next, err := model.NewRepeat(title, m.targetSeriesStart.Format(model.DateTimeFormat), m.targetSeriesEnd.Format(model.DateTimeFormat), m.targetFreq)
-		if err != nil {
-			m.fail(err)
-			return
-		}
-		next.Until = m.targetUntil
-		next.URL = m.seriesURL(urlChanged, url)
-		err = store.UpdateRepeatDays(m.dataPath, m.targetRepeatID, next, urlChanged)
-		status := "Saved all events."
-		if titleChanged && !urlChanged {
-			status = "Renamed all events."
-		}
-		m.finish(status, err, calPick{repeatID: m.targetRepeatID})
-		return
-	}
-	name := m.targetSeriesTitle
-	if titleChanged {
-		name = title
-	}
-	anchorStart := clockFrom(m.targetSeriesStart, start)
-	anchorEnd := clockEndFrom(m.targetSeriesStart, end)
-	next, err := model.NewRepeat(name, anchorStart.Format(model.DateTimeFormat), anchorEnd.Format(model.DateTimeFormat), freq)
-	if err != nil {
-		m.fail(err)
-		return
-	}
-	next.Until = m.targetUntil
-	next.URL = m.seriesURL(urlChanged, url)
-	err = store.ReplaceRepeat(m.dataPath, m.targetRepeatID, next)
-	status := "Rescheduled all events."
-	if titleChanged {
-		status = "Saved all events."
-	}
-	m.finish(status, err, calPick{repeatID: m.targetRepeatID})
-}
-
-func (m calModel) seriesURL(urlChanged bool, url string) string {
-	if urlChanged {
-		return url
-	}
-	return m.targetSeriesURL
+	verb := map[model.CalChange]string{model.ChangeSaved: "Saved", model.ChangeRenamed: "Renamed", model.ChangeRescheduled: "Rescheduled"}[saved.Change]
+	return verb + " " + []string{"this event", "this and following", "all events"}[scope] + "."
 }

@@ -26,6 +26,13 @@ func Path() string {
 	return filepath.Join(configBase(), "crusade", "config.json")
 }
 
+// DoPath is the Vim buffer of the do list, beside the config file. The do
+// list lives in the crusade database; this file is written from it for each
+// Vim session.
+func DoPath() string {
+	return filepath.Join(filepath.Dir(Path()), "do")
+}
+
 func legacyPath() string {
 	return filepath.Join(configBase(), "xyz", "config.json")
 }
@@ -51,7 +58,7 @@ func migrateLegacyConfig() error {
 		return err
 	}
 	legacyDo := filepath.Join(filepath.Dir(legacyPath()), "do")
-	nextDo := filepath.Join(filepath.Dir(Path()), "do")
+	nextDo := DoPath()
 	if err := moveIfMissing(legacyDo, nextDo); err != nil {
 		return err
 	}

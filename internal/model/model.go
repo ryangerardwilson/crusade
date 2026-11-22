@@ -19,19 +19,23 @@ const (
 	ModeNLP   = "nlp"
 )
 
-type Event struct {
-	Mode   string
+// Align is one align record: on day X the outcome Y matters because of Z.
+// DoneAt is when it was marked done, or zero when it is not done.
+type Align struct {
 	X      time.Time
 	Y      string
 	Z      string
-	Done   bool
 	DoneAt time.Time
 }
 
-func DefaultEvent(now time.Time) Event {
-	return Event{
-		Mode: ModeAlign,
-		X:    time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()),
+// Done is derived from DoneAt.
+func (e Align) Done() bool {
+	return !e.DoneAt.IsZero()
+}
+
+func DefaultAlign(now time.Time) Align {
+	return Align{
+		X: time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()),
 	}
 }
 
@@ -54,20 +58,20 @@ func ParseDateTime(raw string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("Invalid datetime format: '%s'. Expected YYYY-MM-DD HH:MM[:SS]", value)
 }
 
-func NewEvent(x, y, z string) (Event, error) {
+func NewAlign(x, y, z string) (Align, error) {
 	parsedX, err := ParseAlignDate(x)
 	if err != nil {
-		return Event{}, err
+		return Align{}, err
 	}
 	outcome := strings.TrimSpace(y)
 	if outcome == "" {
-		return Event{}, fmt.Errorf("'y' (outcome) cannot be empty")
+		return Align{}, fmt.Errorf("'y' (outcome) cannot be empty")
 	}
 	impact := strings.TrimSpace(z)
 	if impact == "" {
-		return Event{}, fmt.Errorf("'z' (impact) cannot be empty")
+		return Align{}, fmt.Errorf("'z' (impact) cannot be empty")
 	}
-	return Event{Mode: ModeAlign, X: parsedX, Y: outcome, Z: impact}, nil
+	return Align{X: parsedX, Y: outcome, Z: impact}, nil
 }
 
 // ParseAlignDate reads the day an align job happens. A clock time is ignored.
@@ -86,18 +90,6 @@ func ParseAlignDate(raw string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("x needs a date in YYYY-MM-DD")
-}
-
-func NewDoEvent(when, outcome string) (Event, error) {
-	parsedWhen, err := ParseDateTime(when)
-	if err != nil {
-		return Event{}, err
-	}
-	text := strings.TrimSpace(outcome)
-	if text == "" {
-		return Event{}, fmt.Errorf("outcome cannot be empty")
-	}
-	return Event{Mode: ModeDo, X: parsedWhen, Y: text}, nil
 }
 
 // Block is a span of clock time on one day. It is not a do task.
@@ -342,19 +334,12 @@ func calendarDay(value time.Time) time.Time {
 	return time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, time.Local)
 }
 
-func (e Event) IsDo() bool {
-	return e.Mode == ModeDo
-}
-
-func (e Event) WithUpdates(fields map[string]string) (Event, error) {
-	if e.IsDo() {
-		return Event{}, fmt.Errorf("do tasks store an outcome only")
-	}
+func (e Align) WithUpdates(fields map[string]string) (Align, error) {
 	next := e
 	if value, ok := fields["x"]; ok {
 		parsed, err := ParseAlignDate(value)
 		if err != nil {
-			return Event{}, err
+			return Align{}, err
 		}
 		next.X = parsed
 	}
@@ -364,16 +349,15 @@ func (e Event) WithUpdates(fields map[string]string) (Event, error) {
 	if value, ok := fields["z"]; ok {
 		next.Z = strings.TrimSpace(value)
 	}
-	updated, err := NewEvent(next.X.Format("2006-01-02"), next.Y, next.Z)
+	updated, err := NewAlign(next.X.Format("2006-01-02"), next.Y, next.Z)
 	if err != nil {
-		return Event{}, err
+		return Align{}, err
 	}
-	updated.Done = e.Done
 	updated.DoneAt = e.DoneAt
 	return updated, nil
 }
 
-func ToYAML(event Event) ([]byte, error) {
+func ToYAML(event Align) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.WriteString("# Job to be done\n")
 	buf.WriteString("# x: when this happens (YYYY-MM-DD)\n")
@@ -398,13 +382,13 @@ func writeAlignField(buf *bytes.Buffer, key, value string) {
 	}
 }
 
-func FromYAML(data []byte) (Event, error) {
+func FromYAML(data []byte) (Align, error) {
 	fields := map[string]string{}
 	current := ""
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.TrimSpace(line) == "---" {
 			if len(fields) > 0 {
-				return Event{}, fmt.Errorf("Invalid YAML: one record only")
+				return Align{}, fmt.Errorf("Invalid YAML: one record only")
 			}
 			continue
 		}
@@ -414,29 +398,29 @@ func FromYAML(data []byte) (Event, error) {
 		}
 		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
 			if current == "" {
-				return Event{}, fmt.Errorf("Invalid YAML: expected x, y, and z")
+				return Align{}, fmt.Errorf("Invalid YAML: expected x, y, and z")
 			}
 			fields[current] += "\n" + strings.TrimLeft(line, " \t")
 			continue
 		}
 		key, value, ok := splitAlignField(line)
 		if !ok {
-			return Event{}, fmt.Errorf("Invalid YAML: expected x, y, and z")
+			return Align{}, fmt.Errorf("Invalid YAML: expected x, y, and z")
 		}
 		key = plainScalar(key)
 		if key != "x" && key != "y" && key != "z" {
-			return Event{}, fmt.Errorf("Invalid YAML: unknown field %s", key)
+			return Align{}, fmt.Errorf("Invalid YAML: unknown field %s", key)
 		}
 		if _, exists := fields[key]; exists {
-			return Event{}, fmt.Errorf("Invalid YAML: duplicate field %s", key)
+			return Align{}, fmt.Errorf("Invalid YAML: duplicate field %s", key)
 		}
 		fields[key] = plainScalar(value)
 		current = key
 	}
 	if strings.TrimSpace(fields["y"]) == "" && strings.TrimSpace(fields["z"]) == "" {
-		return Event{}, ErrBlankAlign
+		return Align{}, ErrBlankAlign
 	}
-	return NewEvent(fields["x"], fields["y"], fields["z"])
+	return NewAlign(fields["x"], fields["y"], fields["z"])
 }
 
 // ErrBlankAlign means the job file still has empty y and z.
@@ -474,7 +458,7 @@ func plainScalar(value string) string {
 	return value
 }
 
-func Less(a, b Event) bool {
+func Less(a, b Align) bool {
 	if !a.X.Equal(b.X) {
 		return a.X.Before(b.X)
 	}

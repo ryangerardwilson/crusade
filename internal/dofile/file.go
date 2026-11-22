@@ -17,6 +17,12 @@ func Path() string {
 
 // Ensure creates the list from current do outcomes when the file is missing.
 // An existing file is left untouched.
+//
+// Architecture exception (gates §1.3, §2.2, §2.5, §2.12): after this seed the
+// file owns the do list, but the crusade do CLI still writes do rows to the
+// task table, so a do outcome can live in both places with no sync. The seed
+// runs once and nothing here writes rows. Remove once the do CLI edits this
+// file or the file is dropped for the rows.
 func Ensure(dataPath string) error {
 	if err := config.Ensure(); err != nil {
 		return err

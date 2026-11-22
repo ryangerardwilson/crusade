@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ryangerardwilson/crusade/internal/box"
+	"github.com/ryangerardwilson/crusade/internal/lineedit"
 	"github.com/ryangerardwilson/crusade/internal/store"
 )
 
@@ -567,10 +568,7 @@ func (m *boxModel) handleBoxComposeKey(key string) {
 		m.commitBoxCompose()
 		return
 	}
-	scratch := appModel{composeText: m.composeText, composeCursor: m.composeCursor}
-	scratch.handleComposeKey(key)
-	m.composeText = scratch.composeText
-	m.composeCursor = scratch.composeCursor
+	m.composeText, m.composeCursor, _ = lineedit.Key(m.composeText, m.composeCursor, key)
 }
 
 func (m *boxModel) commitBoxCompose() {
@@ -673,6 +671,10 @@ func (m *boxModel) selectID(id string) {
 	}
 }
 
+// Architecture exception (gates §2.6, §2.17): box mode edits its copy of the
+// outline and saves it whole, so a box CLI edit made while the mode is open is
+// overwritten. Checks and counts are reloaded after each save. Remove once
+// outline edits become store operations on one box.
 func (m *boxModel) persistOutline(status string) error {
 	if err := store.SaveOutline(m.dataPath, m.outline); err != nil {
 		return err

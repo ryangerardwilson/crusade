@@ -13,6 +13,12 @@ import (
 
 // The application owns this sqlite file. Nebula sql is the Postgres
 // interface and is not called. Nebula s3 backs the file up.
+//
+// Architecture exception (gates §3.15): internal/store/localdb.go and
+// nlp/internal/state/localdb.go are the same file under two package names,
+// so a change to sqlite access lands twice. Keep them identical. The model
+// DSL has no foreign keys or CHECK constraints (gates §1.5, §1.6). Remove once
+// both packages import one sqlite package that supports them.
 
 type appModel struct {
 	name    string
@@ -194,7 +200,9 @@ func sqliteRun(path, sql string, asJSON bool) (string, error) {
 	if bin == "" {
 		bin = "/usr/bin/sqlite3"
 	}
-	args := []string{"-batch", "-cmd", ".timeout 5000"}
+	// -bail stops at the first failed statement, so a script wrapped in
+	// BEGIN and COMMIT never commits the statements before the failure.
+	args := []string{"-batch", "-bail", "-cmd", ".timeout 5000"}
 	if asJSON {
 		args = append(args, "-json")
 	}

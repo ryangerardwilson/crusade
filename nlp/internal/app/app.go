@@ -38,6 +38,7 @@ var (
 	selectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Background(lipgloss.Color("238"))
 	statusStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
 	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+	cursorStyle   = lipgloss.NewStyle().Reverse(true)
 )
 
 type model struct {
@@ -71,6 +72,7 @@ type model struct {
 
 	inputKind   string
 	input       string
+	inputCursor int
 	leader      bool
 	leaderSeq   string
 	deleteArmed bool

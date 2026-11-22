@@ -18,6 +18,7 @@ const databaseName = "nlp"
 const importedCoursesKey = "imported_courses"
 const appVersionKey = "app_version"
 
+// Null value in meta is a key that is set with no value.
 const metaModel = "model meta\n" +
 	"  id integer primary key\n" +
 	"  key text not null\n" +
@@ -314,10 +315,7 @@ func SavePlace(path, cursor string) error {
 	if err != nil {
 		return err
 	}
-	if err := setMeta(dbPath, placePathKey, path); err != nil {
-		return err
-	}
-	return setMeta(dbPath, placeCursorKey, cursor)
+	return execSQL(dbPath, inTx(metaSQL(placePathKey, path), metaSQL(placeCursorKey, cursor)))
 }
 
 // LoadPlace reads the session list place. ok is false when none is stored.
@@ -341,14 +339,20 @@ func LoadPlace() (string, string, bool, error) {
 }
 
 func setMeta(dbPath, key, value string) error {
-	has, err := metaHas(dbPath, key)
-	if err != nil {
-		return err
-	}
-	if has {
-		return execSQL(dbPath, "UPDATE meta SET value = "+sqlString(value)+" WHERE key = "+sqlString(key)+";\n")
-	}
-	return execSQL(dbPath, "INSERT INTO meta(key, value) VALUES ("+sqlString(key)+", "+sqlString(value)+");\n")
+	return execSQL(dbPath, metaSQL(key, value))
+}
+
+// metaSQL sets key to value, inserting the row when the key is new.
+func metaSQL(key, value string) string {
+	return fmt.Sprintf("UPDATE meta SET value = %[2]s WHERE key = %[1]s;\n"+
+		"INSERT INTO meta(key, value) SELECT %[1]s, %[2]s WHERE NOT EXISTS (SELECT 1 FROM meta WHERE key = %[1]s);\n",
+		sqlString(key), sqlString(value))
+}
+
+// inTx wraps statements in one transaction. sqliteRun bails at the first
+// failed statement, so nothing before it commits.
+func inTx(statements ...string) string {
+	return "BEGIN IMMEDIATE;\n" + strings.Join(statements, "") + "COMMIT;\n"
 }
 
 func ensure(dbPath string) error {

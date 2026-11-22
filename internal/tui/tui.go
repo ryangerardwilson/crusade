@@ -10,11 +10,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/ryangerardwilson/crusade/internal/lineedit"
 	"github.com/ryangerardwilson/crusade/internal/model"
 	"github.com/ryangerardwilson/crusade/internal/store"
 )
@@ -178,6 +178,7 @@ var (
 	todayStyle      = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(lipgloss.Color("255"))
 	eventDayStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
 	errorStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("204"))
+	cursorStyle     = lipgloss.NewStyle().Reverse(true)
 	helpPanelStyle  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("250")).Padding(1, 2)
 	helpKeyStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255"))
 )
@@ -853,41 +854,11 @@ func (m *appModel) cancelCompose() {
 }
 
 func (m *appModel) handleComposeKey(key string) {
-	switch key {
-	case "enter":
+	if key == "enter" {
 		m.commitCompose()
-	case "backspace", "ctrl+h":
-		m.deleteCompose(m.composeCursor-1, m.composeCursor)
-	case "ctrl+d", "delete":
-		m.deleteCompose(m.composeCursor, m.composeCursor+1)
-	case "left", "ctrl+b":
-		m.moveCompose(-1)
-	case "right", "ctrl+f":
-		m.moveCompose(1)
-	case "home", "ctrl+a":
-		m.composeCursor = 0
-	case "end", "ctrl+e":
-		m.composeCursor = len([]rune(m.composeText))
-	case "ctrl+k":
-		m.deleteCompose(m.composeCursor, len([]rune(m.composeText)))
-	case "ctrl+u":
-		m.deleteCompose(0, m.composeCursor)
-	case "ctrl+w", "alt+backspace":
-		m.deleteCompose(backwardWord([]rune(m.composeText), m.composeCursor), m.composeCursor)
-	case "alt+d":
-		runes := []rune(m.composeText)
-		m.deleteCompose(m.composeCursor, forwardWord(runes, m.composeCursor))
-	case "alt+f":
-		m.composeCursor = forwardWord([]rune(m.composeText), m.composeCursor)
-	case "alt+b":
-		m.composeCursor = backwardWord([]rune(m.composeText), m.composeCursor)
-	case "ctrl+t":
-		m.transposeCompose()
-	default:
-		if len(key) == 1 && key[0] >= 32 {
-			m.insertCompose(key)
-		}
+		return
 	}
+	m.composeText, m.composeCursor, _ = lineedit.Key(m.composeText, m.composeCursor, key)
 }
 
 func (m *appModel) beginNewTask() {
@@ -1154,81 +1125,17 @@ func (m appModel) composeShown() string {
 }
 
 func composeShown(text string, cursor int) string {
-	runes := []rune(text)
-	cursor = clamp(cursor, 0, len(runes))
-	if cursor >= len(runes) {
-		return string(runes) + "▌"
-	}
-	under := lipgloss.NewStyle().Reverse(true).Render(string(runes[cursor]))
-	return string(runes[:cursor]) + under + string(runes[cursor+1:])
+	return lineedit.Show(text, cursor, func(cell string) string { return cursorStyle.Render(cell) })
 }
 
 func (m *appModel) insertCompose(text string) {
-	runes := []rune(m.composeText)
-	cursor := clamp(m.composeCursor, 0, len(runes))
-	extra := []rune(text)
-	next := append(append(append([]rune{}, runes[:cursor]...), extra...), runes[cursor:]...)
-	m.composeText = string(next)
-	m.composeCursor = cursor + len(extra)
+	m.composeText, m.composeCursor = lineedit.Insert(m.composeText, m.composeCursor, text)
 }
 
-func (m *appModel) deleteCompose(from int, to int) {
-	runes := []rune(m.composeText)
-	from = clamp(from, 0, len(runes))
-	to = clamp(to, 0, len(runes))
-	if to < from {
-		from, to = to, from
-	}
-	m.composeText = string(append(append([]rune{}, runes[:from]...), runes[to:]...))
-	m.composeCursor = from
-}
-
-func (m *appModel) moveCompose(delta int) {
-	m.composeCursor = clamp(m.composeCursor+delta, 0, len([]rune(m.composeText)))
-}
-
-func (m *appModel) transposeCompose() {
-	runes := []rune(m.composeText)
-	cursor := clamp(m.composeCursor, 0, len(runes))
-	if len(runes) < 2 || cursor == 0 {
-		return
-	}
-	if cursor == len(runes) {
-		runes[cursor-2], runes[cursor-1] = runes[cursor-1], runes[cursor-2]
-	} else {
-		runes[cursor-1], runes[cursor] = runes[cursor], runes[cursor-1]
-		cursor++
-	}
-	m.composeText = string(runes)
-	m.composeCursor = cursor
-}
-
-func forwardWord(runes []rune, cursor int) int {
-	cursor = clamp(cursor, 0, len(runes))
-	for cursor < len(runes) && !isWordRune(runes[cursor]) {
-		cursor++
-	}
-	for cursor < len(runes) && isWordRune(runes[cursor]) {
-		cursor++
-	}
-	return cursor
-}
-
-func backwardWord(runes []rune, cursor int) int {
-	cursor = clamp(cursor, 0, len(runes))
-	for cursor > 0 && !isWordRune(runes[cursor-1]) {
-		cursor--
-	}
-	for cursor > 0 && isWordRune(runes[cursor-1]) {
-		cursor--
-	}
-	return cursor
-}
-
-func isWordRune(r rune) bool {
-	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
-}
-
+// Architecture exception (gates §2.7): a new align task is a draft row that
+// Vim edits in place, and finishEditor deletes it when Vim fails or the draft
+// is left blank. A crash while Vim is open leaves the draft row. Remove once
+// Vim edits a temporary file and the row is added on save.
 func (m *appModel) addTaskInVim() tea.Cmd {
 	selected := m.selectedDate()
 	event := model.Event{

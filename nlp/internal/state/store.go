@@ -5,6 +5,10 @@ import (
 	"strings"
 )
 
+// Architecture exception (gates §1.5, §1.11): retired bundled slugs are one
+// newline-separated meta value. retireSQL is the only writer and slugRetired
+// the only reader. Remove once a retired_course table with a unique slug
+// replaces the list.
 const retiredCoursesKey = "retired_courses"
 
 func SaveCourse(slug, name, body string) error {
@@ -43,15 +47,19 @@ func DeleteStoredCourse(slug string) error {
 	if err != nil {
 		return err
 	}
+	var statements []string
 	for _, item := range embedded {
 		if item.Slug == slug {
-			if err := retireSlug(dbPath, slug); err != nil {
+			retire, err := retireSQL(dbPath, slug)
+			if err != nil {
 				return err
 			}
+			statements = append(statements, retire)
 			break
 		}
 	}
-	return execSQL(dbPath, "DELETE FROM course WHERE slug = "+sqlString(slug)+";\n")
+	statements = append(statements, "DELETE FROM course WHERE slug = "+sqlString(slug)+";\n")
+	return execSQL(dbPath, inTx(statements...))
 }
 
 func slugRetired(dbPath, slug string) (bool, error) {
@@ -67,22 +75,24 @@ func slugRetired(dbPath, slug string) (bool, error) {
 	return false, nil
 }
 
-func retireSlug(dbPath, slug string) error {
+// retireSQL adds slug to the retired list, or is empty when slug is already
+// retired.
+func retireSQL(dbPath, slug string) (string, error) {
 	retired, err := slugRetired(dbPath, slug)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if retired {
-		return nil
+		return "", nil
 	}
 	value, err := metaValue(dbPath, retiredCoursesKey)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if strings.TrimSpace(value) == "" {
 		value = slug
 	} else {
 		value = value + "\n" + slug
 	}
-	return setMeta(dbPath, retiredCoursesKey, value)
+	return metaSQL(retiredCoursesKey, value), nil
 }

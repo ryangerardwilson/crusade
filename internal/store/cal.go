@@ -8,6 +8,7 @@ import (
 	"github.com/ryangerardwilson/crusade/internal/model"
 )
 
+// Null url in block is a block with no meeting link.
 const blockModel = "model block\n" +
 	"  id integer primary key\n" +
 	"  title text not null\n" +

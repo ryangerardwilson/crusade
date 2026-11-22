@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ryangerardwilson/crusade/internal/lineedit"
 	"github.com/ryangerardwilson/crusade/internal/model"
 	"github.com/ryangerardwilson/crusade/internal/store"
 )
@@ -226,9 +227,8 @@ func (m *calModel) setFormText(text string, cursor int) {
 }
 
 func editFormLine(text string, cursor int, key string) (string, int) {
-	scratch := appModel{composeText: text, composeCursor: cursor}
-	scratch.handleComposeKey(key)
-	return scratch.composeText, scratch.composeCursor
+	text, cursor, _ = lineedit.Key(text, cursor, key)
+	return text, cursor
 }
 
 func (m *calModel) pasteIntoForm(runes []rune) {
@@ -240,9 +240,7 @@ func (m *calModel) pasteIntoForm(runes []rune) {
 		return
 	}
 	current, cursor := m.formText()
-	scratch := appModel{composeText: current, composeCursor: cursor}
-	scratch.insertCompose(text)
-	m.setFormText(scratch.composeText, scratch.composeCursor)
+	m.setFormText(lineedit.Insert(current, cursor, text))
 }
 
 func pastedLine(runes []rune) string {
@@ -540,6 +538,11 @@ func (m *calModel) commitRepeatForm(title string, start, end time.Time, freq, ur
 	}
 }
 
+// Architecture exception (gates §3.7): the repeat commits below decide from the
+// form which clock a this-and-following or all-events edit keeps and whether
+// rescheduling drops renamed days. Each decision then lands as one store call
+// that writes in one transaction. Remove once a cal domain package owns these
+// rules and the form only passes what changed.
 func (m *calModel) commitThisRepeat(title string, start, end time.Time, url string, titleChanged, timesChanged bool) {
 	urlChanged := url != m.targetURL
 	if urlChanged && !titleChanged && !timesChanged {
@@ -547,13 +550,11 @@ func (m *calModel) commitThisRepeat(title string, start, end time.Time, url stri
 		m.finish("Saved the meeting link.", err, calPick{repeatID: m.targetRepeatID})
 		return
 	}
+	override := store.OverrideRepeatDay
 	if urlChanged {
-		if err := store.ApplyRepeatURL(m.dataPath, m.targetRepeatID, url); err != nil {
-			m.fail(err)
-			return
-		}
+		override = store.OverrideRepeatDayAndURL
 	}
-	err := store.OverrideRepeatDay(m.dataPath, m.targetRepeatID, m.targetDay, title, start, end, url)
+	err := override(m.dataPath, m.targetRepeatID, m.targetDay, title, start, end, url)
 	status := "Saved this event."
 	if titleChanged && !timesChanged {
 		status = "Renamed this event."
@@ -566,12 +567,6 @@ func (m *calModel) commitThisRepeat(title string, start, end time.Time, url stri
 }
 
 func (m *calModel) commitFollowingRepeat(title string, start, end time.Time, freq, url string, titleChanged, timesChanged, freqChanged, urlChanged bool) {
-	if urlChanged {
-		if err := store.ApplyRepeatURL(m.dataPath, m.targetRepeatID, url); err != nil {
-			m.fail(err)
-			return
-		}
-	}
 	name := m.targetSeriesTitle
 	if titleChanged {
 		name = title
@@ -589,22 +584,10 @@ func (m *calModel) commitFollowingRepeat(title string, start, end time.Time, fre
 		return
 	}
 	next.URL = m.seriesURL(urlChanged, url)
-	id, err := store.ContinueRepeat(m.dataPath, m.targetRepeatID, m.targetDay, next, clear)
+	id, err := store.ContinueRepeat(m.dataPath, m.targetRepeatID, m.targetDay, next, clear, urlChanged)
 	if err != nil {
 		m.fail(err)
 		return
-	}
-	if !clear && sameDate(m.targetSeriesStart, m.targetDay) {
-		if err := store.RenameRepeatOverrides(m.dataPath, id, next.Title); err != nil {
-			m.fail(err)
-			return
-		}
-		if urlChanged {
-			if err := store.SetRepeatOverrideURLs(m.dataPath, id, next.URL); err != nil {
-				m.fail(err)
-				return
-			}
-		}
 	}
 	status := "Saved this and following."
 	if titleChanged && !clear {
@@ -624,17 +607,7 @@ func (m *calModel) commitAllRepeats(title string, start, end time.Time, freq, ur
 		}
 		next.Until = m.targetUntil
 		next.URL = m.seriesURL(urlChanged, url)
-		if err := store.UpdateRepeat(m.dataPath, m.targetRepeatID, next); err != nil {
-			m.fail(err)
-			return
-		}
-		if err = store.RenameRepeatOverrides(m.dataPath, m.targetRepeatID, next.Title); err != nil {
-			m.fail(err)
-			return
-		}
-		if urlChanged {
-			err = store.SetRepeatOverrideURLs(m.dataPath, m.targetRepeatID, next.URL)
-		}
+		err = store.UpdateRepeatDays(m.dataPath, m.targetRepeatID, next, urlChanged)
 		status := "Saved all events."
 		if titleChanged && !urlChanged {
 			status = "Renamed all events."

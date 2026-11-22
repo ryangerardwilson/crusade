@@ -3,9 +3,9 @@ package app
 import (
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ryangerardwilson/crusade/internal/lineedit"
 	"github.com/ryangerardwilson/crusade/nlp/internal/course"
 	"github.com/ryangerardwilson/crusade/nlp/internal/state"
 )
@@ -25,25 +25,23 @@ func (m model) updateInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.inputKind = ""
 		m.input = ""
+		m.inputCursor = 0
 		m.status = "cancelled"
 		return m, nil
 	case "enter":
 		return m, m.commitInput()
-	case "backspace", "ctrl+h":
-		m.input = trimLastRune(m.input)
-		m.paintInput()
-		return m, nil
-	case "ctrl+w":
-		m.input = trimPreviousWord(m.input)
-		m.paintInput()
-		return m, nil
-	default:
-		if len(msg.Runes) > 0 && !strings.ContainsAny(string(msg.Runes), "\r\n") {
-			m.input += string(msg.Runes)
-			m.paintInput()
-		}
-		return m, nil
 	}
+	if text, cursor, ok := lineedit.Key(m.input, m.inputCursor, msg.String()); ok {
+		m.input, m.inputCursor = text, cursor
+	} else if pastedRunes(msg) {
+		m.input, m.inputCursor = lineedit.Insert(m.input, m.inputCursor, string(msg.Runes))
+	}
+	m.paintInput()
+	return m, nil
+}
+
+func pastedRunes(msg tea.KeyMsg) bool {
+	return !msg.Alt && len(msg.Runes) > 0 && !strings.ContainsAny(string(msg.Runes), "\r\n")
 }
 
 func (m model) updateLeader(key string) (tea.Model, tea.Cmd) {
@@ -78,6 +76,7 @@ func (m *model) beginRename() {
 	m.deleteArmed = false
 	m.inputKind = "rename"
 	m.input = name
+	m.inputCursor = len([]rune(name))
 	m.paintInput()
 }
 
@@ -91,6 +90,7 @@ func (m *model) beginNew() {
 	m.deleteArmed = false
 	m.inputKind = "new"
 	m.input = ""
+	m.inputCursor = 0
 	m.paintInput()
 }
 
@@ -99,7 +99,7 @@ func (m *model) paintInput() {
 	if m.inputKind == "new" {
 		label = m.newLabel
 	}
-	m.status = strings.TrimSpace(label + " " + m.input)
+	m.status = label + " " + lineedit.Show(m.input, m.inputCursor, func(cell string) string { return cursorStyle.Render(cell) })
 }
 
 func (m *model) commitInput() tea.Cmd {
@@ -107,6 +107,7 @@ func (m *model) commitInput() tea.Cmd {
 	kind := m.inputKind
 	m.inputKind = ""
 	m.input = ""
+	m.inputCursor = 0
 	if value == "" {
 		m.status = "missing name"
 		return nil
@@ -273,27 +274,4 @@ func (m *model) sortCourses() {
 		courses[j] = item
 	}
 	m.cfg.Courses = courses
-}
-
-func trimPreviousWord(value string) string {
-	value = strings.TrimRightFunc(value, func(r rune) bool { return r == ' ' })
-	for len(value) > 0 {
-		_, size := lastRune(value)
-		if size == 0 {
-			break
-		}
-		r := value[len(value)-size]
-		value = value[:len(value)-size]
-		if r == ' ' {
-			break
-		}
-	}
-	return value
-}
-
-func lastRune(value string) (rune, int) {
-	if value == "" {
-		return 0, 0
-	}
-	return utf8.DecodeLastRuneInString(value)
 }

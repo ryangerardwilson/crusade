@@ -16,6 +16,13 @@ import (
 
 const boxesImportedKey = "boxes_imported"
 
+// Architecture exception (gates §1.3, §1.4, §1.5): a box is keyed by its path,
+// which box.ParseOutline builds from the labels, and the integer id is
+// renumbered on every save. parent_path and box_check.path point at that path
+// with no foreign key, and depth is derived from parent_path. saveOutlineRows
+// is the only writer and rewrites all three, and drops checks of removed paths,
+// in one transaction. Remove once boxes get a stable opaque id and a
+// migration rebuilds box and box_check with foreign keys.
 const boxModel = "model box\n" +
 	"  id integer primary key\n" +
 	"  path text not null\n" +
@@ -29,6 +36,7 @@ const boxCheckModel = "model box_check\n" +
 	"  day text not null\n" +
 	"  path text not null\n"
 
+// Null value in meta is a key that is set with no value.
 const metaModel = "model meta\n" +
 	"  id integer primary key\n" +
 	"  key text not null\n" +
@@ -219,13 +227,12 @@ func SaveOutline(dbPath string, outline box.Outline) error {
 	if err := ensure(dbPath); err != nil {
 		return err
 	}
-	if err := saveOutlineRows(dbPath, outline); err != nil {
-		return err
-	}
-	return setMeta(dbPath, boxesImportedKey, "1")
+	return saveOutlineRows(dbPath, outline, metaSQL(boxesImportedKey, "1"))
 }
 
-func saveOutlineRows(dbPath string, outline box.Outline) error {
+// saveOutlineRows replaces the outline and drops checks of removed boxes. The
+// statements in then run in the same transaction.
+func saveOutlineRows(dbPath string, outline box.Outline, then ...string) error {
 	rows := flattenOutline(outline)
 	keep := map[string]bool{}
 	for _, row := range rows {
@@ -251,6 +258,9 @@ func saveOutlineRows(dbPath string, outline box.Outline) error {
 		if !keep[check.Path] {
 			fmt.Fprintf(&b, "DELETE FROM box_check WHERE path = %s;\n", sqlString(check.Path))
 		}
+	}
+	for _, statement := range then {
+		b.WriteString(statement)
 	}
 	b.WriteString("COMMIT;\n")
 	return execSQL(dbPath, b.String())
@@ -364,20 +374,14 @@ func metaValue(dbPath, key string) (string, bool, error) {
 }
 
 func setMeta(dbPath, key, value string) error {
-	var rows []struct {
-		ID int `json:"id"`
-	}
-	if err := queryJSON(dbPath, "SELECT id FROM meta WHERE key = "+sqlString(key)+" LIMIT 1", &rows); err != nil {
-		return err
-	}
-	if len(rows) > 0 {
-		return execSQL(dbPath, "UPDATE meta SET value = "+sqlString(value)+" WHERE id = "+fmt.Sprint(rows[0].ID))
-	}
-	next, err := nextTableID(dbPath, "meta")
-	if err != nil {
-		return err
-	}
-	return execSQL(dbPath, fmt.Sprintf("INSERT INTO meta(id, key, value) VALUES (%d, %s, %s)", next, sqlString(key), sqlString(value)))
+	return execSQL(dbPath, metaSQL(key, value))
+}
+
+// metaSQL sets key to value, inserting the row when the key is new.
+func metaSQL(key, value string) string {
+	return fmt.Sprintf("UPDATE meta SET value = %[2]s WHERE key = %[1]s;\n"+
+		"INSERT INTO meta(id, key, value) SELECT (SELECT COALESCE(MAX(id), 0) + 1 FROM meta), %[1]s, %[2]s WHERE NOT EXISTS (SELECT 1 FROM meta WHERE key = %[1]s);\n",
+		sqlString(key), sqlString(value))
 }
 
 const lastModeKey = "last_mode"

@@ -15,6 +15,15 @@ const DatabaseName = "crusade"
 
 const legacyDatabaseName = "xecute"
 
+// taskModel holds align records and legacy do tasks. Null z is a do task with
+// no impact; null done_at is a task never marked done, or one done before
+// done_at existed.
+//
+// Architecture exception (gates §1.6, §1.7, §1.16): mode has no CHECK, done
+// and done_at can disagree, and x is a day for align but a date and time for
+// do. model.NewEvent, model.NewDoEvent, and stored() enforce these on every
+// write. Remove once a table-rebuild migration adds CHECK constraints and
+// splits do tasks from align records.
 const taskModel = "model task\n" +
 	"  id integer primary key\n" +
 	"  mode text not null\n" +

@@ -151,7 +151,7 @@ func assertRepeatSplit(t *testing.T, db string, id int, nov9, nov16 time.Time) R
 		t.Fatal(err)
 	}
 	nov23 := time.Date(2026, 11, 23, 0, 0, 0, 0, time.Local)
-	newID, err := ContinueRepeat(db, id, nov23, next, true)
+	newID, err := ContinueRepeat(db, id, nov23, next, true, false)
 	if anyOf(err != nil, newID == id) {
 
 		t.Fatalf("split = %d %v", newID, err)
@@ -212,10 +212,7 @@ func assertRepeatRenamed(t *testing.T, db string, id int, old RepeatRecord) {
 	if err := UpdateRepeat(db, id, renamed); err != nil {
 		t.Fatal(err)
 	}
-	if err := UpdateRepeat(db, id, renamed); err != nil {
-		t.Fatal(err)
-	}
-	if err := RenameRepeatOverrides(db, id, "forum"); err != nil {
+	if err := UpdateRepeatDays(db, id, renamed, false); err != nil {
 		t.Fatal(err)
 	}
 	changes, err := LoadRepeatChanges(db)

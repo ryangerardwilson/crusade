@@ -1,5 +1,7 @@
 # AGENTS.md
 
+This tool is part of a harness for 0→1 product engineering with AI agents. Prefer the smallest system that keeps rules visible and recoverable.
+
 <!-- OPENSPEC:START -->
 # OpenSpec Instructions
 

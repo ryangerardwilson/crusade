@@ -11,6 +11,12 @@ The app is a single Go binary. It keeps its databases in its own sqlite. [nebula
 box, nlp, and align. Leaving a mode returns to that menu. Esc on the menu quits. Enter or ctrl+m opens the selected mode.
 Align, box, cal, and nlp stay on the Bubble Tea surface.
 
+## Product intent before code
+
+Every goal is stored as an outcome statement, not a task list. The daily checklist and calendar block time against those outcomes so the work stays tied to the commercial result it serves.
+
+This is the same habit used when scoping a 0→1 product: recover the real outcome, make the rules visible, then build the smallest system that delivers it. The SQLite file (backed up via nebula) keeps the history of decisions and outcomes inspectable.
+
 ## Install
 
 ```bash
@@ -179,3 +185,5 @@ go run ./cmd/crusade -m align -r limit 5
 ./install.sh from .
 ./push_release_upgrade.sh
 ```
+
+Part of an open-source harness for shipping the smallest inspectable system that agents and operators can run and improve. See also [nebula](https://github.com/ryangerardwilson/nebula), [c3po](https://github.com/ryangerardwilson/c3po), [r2d2](https://github.com/ryangerardwilson/r2d2), [crusade](https://github.com/ryangerardwilson/crusade), [tesseract](https://github.com/ryangerardwilson/tesseract).

@@ -329,7 +329,7 @@ func rowsChanged(dbPath, sql string) (bool, error) {
 	return changed, err
 }
 
-// execSQL writes the app sqlite and backs it up.
+// execSQL writes the app sqlite and marks it for its backup.
 func execSQL(dbPath, sql string) error {
 	if err := sqlite.Exec(dbPath, sql); err != nil {
 		return err
@@ -338,8 +338,8 @@ func execSQL(dbPath, sql string) error {
 	return nil
 }
 
-// published backs the file up unless it holds no records. An empty file is
-// the damaged local copy, so it is not published.
+// published tells nebula keep the file changed unless it holds no records.
+// The install row is not a record, so a file with none is not marked.
 func published(dbPath string) {
 	if os.Getenv("SQLX_ROOT") != "" {
 		return
@@ -351,5 +351,5 @@ func published(dbPath string) {
 	if err := sqlite.Query(dbPath, sql, &rows); err != nil || len(rows) == 0 || rows[0].N == 0 {
 		return
 	}
-	sqlite.Publish(dbPath, DatabaseName)
+	sqlite.Mark(dbPath, DatabaseName)
 }

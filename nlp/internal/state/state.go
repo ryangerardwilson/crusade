@@ -321,8 +321,9 @@ func expandPath(path string) string {
 	return path
 }
 
-// execSQL writes the nlp sqlite and backs it up unless it holds no course.
-// An empty file is the damaged local copy, so it is not published.
+// execSQL writes the nlp sqlite and tells nebula keep it changed unless it
+// holds no course. The learner row is not a course, so a file with none is
+// not marked.
 func execSQL(dbPath, sql string) error {
 	if err := sqlite.Exec(dbPath, sql); err != nil {
 		return err
@@ -331,7 +332,7 @@ func execSQL(dbPath, sql string) error {
 		N int `json:"n"`
 	}
 	if err := sqlite.Query(dbPath, "SELECT COUNT(*) AS n FROM course", &rows); err == nil && len(rows) > 0 && rows[0].N > 0 {
-		sqlite.Publish(dbPath, databaseName)
+		sqlite.Mark(dbPath, databaseName)
 	}
 	return nil
 }

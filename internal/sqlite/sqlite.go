@@ -3,17 +3,21 @@
 // and the nlp state both use it, so a change to sqlite access is one file.
 //
 // The application owns each sqlite file. Nebula sql is the Postgres interface
-// and is not called. Nebula s3 backs the file up.
+// and is not called. Nebula keep owns the backup at s3://backups/<name>.sqlite:
+// the app says the file changed after a commit and asks for a missing file at
+// startup; the upload, the snapshot, and the retries live in nebula.
 package sqlite
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"testing"
 	"time"
 )
 
@@ -46,7 +50,8 @@ func File(name string) string {
 }
 
 // Prepare creates the file when it is missing, restoring a backup first, and
-// brings it to schema.Version.
+// brings it to schema.Version. A backup that cannot be reached fails Prepare
+// and leaves no file, so an empty file never stands in for the backup.
 func Prepare(path string, schema Schema) error {
 	if err := prepareDirs(path); err != nil {
 		return err
@@ -55,10 +60,7 @@ func Prepare(path string, schema Schema) error {
 		_ = copyLegacyRuntime(path, schema.Name)
 	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		_ = restoreObject(path, schema.Name)
-	}
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		if err := os.WriteFile(path, nil, 0o600); err != nil {
+		if err := restore(path, schema.Name); err != nil {
 			return err
 		}
 	}
@@ -195,47 +197,75 @@ func copyLegacyRuntime(path, name string) error {
 	return os.WriteFile(path, data, 0o600)
 }
 
-func restoreObject(path, name string) error {
-	if os.Getenv("SQLX_ROOT") != "" {
-		return nil
+const (
+	markWait    = 5 * time.Second  // local only: a record and a lock
+	restoreWait = 90 * time.Second // one download over SSH
+)
+
+// restore makes the missing file. nebula keep restores the backup, or makes
+// an empty file when there is none, and fails without a file when the backup
+// cannot be reached. The SQLX_ROOT tree has no backup and starts empty.
+func restore(path, name string) error {
+	if !kept() {
+		return os.WriteFile(path, nil, 0o600)
 	}
-	bin, args, err := s3Args("get", "s3://backups/"+name+".sqlite", path)
+	if err := runKeep(restoreWait, "restore", name, path); err != nil {
+		return err
+	}
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("nebula keep restore %s: no file", name)
+	}
+	return nil
+}
+
+// Mark tells nebula keep the file changed, after a commit. It returns once
+// keep has recorded the change; keep uploads a snapshot later in its own
+// process. The caller decides that the file holds data worth keeping. A failed
+// mark leaves the commit in place; keep's sweep and status show the copy
+// lagging.
+func Mark(path, name string) {
+	if !kept() || path == "" {
+		return
+	}
+	_ = runKeep(markWait, "mark", name, path)
+}
+
+// kept reports that the file has a backup. The SQLX_ROOT tree is local. A
+// test binary reaches only the nebula NEBULA_BIN names, never the operator's.
+func kept() bool {
+	if os.Getenv("SQLX_ROOT") != "" {
+		return false
+	}
+	return !testing.Testing() || os.Getenv("NEBULA_BIN") != ""
+}
+
+func runKeep(wait time.Duration, verb, name, path string) error {
+	bin, err := nebulaBin()
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
-	return exec.CommandContext(ctx, bin, args...).Run()
-}
-
-// Publish backs the file up in the background. The caller decides that the
-// file holds data worth keeping.
-func Publish(path, name string) {
-	if os.Getenv("SQLX_ROOT") != "" || path == "" {
-		return
+	out, err := exec.CommandContext(ctx, bin, "keep", verb, name, path).CombinedOutput()
+	if err == nil {
+		return nil
 	}
-	bin, args, err := s3Args("put", path, "s3://backups/"+name+".sqlite")
-	if err != nil {
-		return
+	msg := strings.TrimSpace(string(out))
+	if msg == "" {
+		msg = err.Error()
 	}
-	go runS3(bin, args)
+	return fmt.Errorf("nebula keep %s %s: %s", verb, name, msg)
 }
 
-func runS3(bin string, args []string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	_ = exec.CommandContext(ctx, bin, args...).Run()
-}
-
-func s3Args(action string, rest ...string) (string, []string, error) {
-	if bin, err := exec.LookPath("s3"); err == nil {
-		return bin, append([]string{action}, rest...), nil
+func nebulaBin() (string, error) {
+	if bin := os.Getenv("NEBULA_BIN"); bin != "" {
+		return bin, nil
 	}
 	bin, err := exec.LookPath("nebula")
 	if err != nil {
-		return "", nil, err
+		return "", errors.New("nebula is not on PATH")
 	}
-	return bin, append([]string{"s3", action}, rest...), nil
+	return bin, nil
 }
 
 // Adopt renames the legacy file in dir to destPath when destPath is missing.
